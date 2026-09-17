@@ -1,0 +1,137 @@
+#compdef fleet
+
+# ------------------------------------------------------------------------------
+# Zsh completion function for `fleet` (Multi-Agent Worktree Orchestrator)
+# ------------------------------------------------------------------------------
+
+_fleet_active_runs() {
+    local -a runs
+    # 1. From tmux sessions
+    local tmux_runs
+    tmux_runs=(${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^fleet-' | sed 's/^fleet-//')"})
+    runs+=("${tmux_runs[@]}")
+
+    # 2. From .worktrees directory
+    local repo_root
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n "$repo_root" && -d "$repo_root/.worktrees" ]]; then
+        local wt_dirs
+        wt_dirs=("$repo_root/.worktrees"/*(N/:t))
+        runs+=("${wt_dirs[@]}")
+    fi
+
+    # Deduplicate non-empty
+    runs=(${(u)runs:#})
+    _describe 'fleet run-id' runs
+}
+
+_fleet_agents() {
+    local -a agents
+    agents=(
+        'claude:Claude Code terminal agent'
+        'agy:Google Antigravity CLI agent'
+        'qoder:Qoder CLI agent'
+    )
+    _describe 'agent' agents
+}
+
+_fleet() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    local -a commands
+    commands=(
+        'spawn:Spawn parallel AI agents in isolated git worktrees & tmux'
+        'broadcast:Dispatch prompt instructions to all (or selected) agents'
+        'diff:Compare agent solutions with colored comparison matrix'
+        'keep:Promote winning agent branch (merge/rebase/PR) & teardown'
+        'kill:Gracefully terminate tmux session, prune worktrees & branches'
+        'ls:List all active fleet runs, worktrees, ports & agent states'
+        'attach:Attach or switch to an active fleet tmux session'
+        'logs:Capture recent pane logs from an agent session'
+        'doctor:Self-heal stale git locks, orphaned worktrees & dead sessions'
+        'version:Show version information'
+        'help:Show help and usage manual'
+    )
+
+    _arguments -C \
+        '1: :->command' \
+        '*:: :->args'
+
+    case $state in
+        command)
+            _describe 'fleet command' commands
+            ;;
+        args)
+            case $words[1] in
+                spawn)
+                    _arguments \
+                        '1:run-id:' \
+                        '(-p --prompt)'{-p,--prompt}'[Initial prompt text]:prompt:_message "prompt text"' \
+                        '(-P --prompt-file)'{-P,--prompt-file}'[Initial prompt file]:file:_files' \
+                        '(-b --base)'{-b,--base}'[Base branch to branch from]:branch:__git_branch_names' \
+                        '(-d --deps)'{-d,--deps}'[Dependency isolation strategy]:strategy:(symlink install none)' \
+                        '--stash[Auto-stash uncommitted changes before spawn]' \
+                        '--snapshot[Create ephemeral snapshot commit for dirty working copy]' \
+                        '--clean[Abort if uncommitted changes exist]' \
+                        '--agents[Comma-separated agents to spawn]:agents:_message "claude,agy,qoder"' \
+                        '(-l --layout)'{-l,--layout}'[Tmux window layout]:layout:(even-horizontal main-horizontal tiled)' \
+                        '--port-base[Base dev server port offset]:port:_message "3100"' \
+                        '--no-attach[Do not automatically attach to tmux session]' \
+                        '(-y --yes)'{-y,--yes}'[Non-interactive mode]'
+                    ;;
+                broadcast|bc)
+                    _arguments \
+                        '1:run-id:_fleet_active_runs' \
+                        '2:prompt:_message "broadcast message"' \
+                        '(-a --agents)'{-a,--agents}'[Target agent(s)]:agents:(all claude agy qoder)' \
+                        '(-f --file)'{-f,--file}'[Read prompt from file]:file:_files' \
+                        '--no-enter[Do not send Enter key after prompt]' \
+                        '(-r --raw)'{-r,--raw}'[Raw text mode]'
+                    ;;
+                diff|df)
+                    _arguments \
+                        '1:run-id:_fleet_active_runs' \
+                        '--stat[Show git diff --stat breakdown]' \
+                        '--summary[Show commit history for each agent]' \
+                        '(-p --patch)'{-p,--patch}'[Display full colored unified patch]' \
+                        '--agent[Filter diff to a single agent]:agent:_fleet_agents'
+                    ;;
+                keep|kp)
+                    _arguments \
+                        '1:run-id:_fleet_active_runs' \
+                        '2:agent:_fleet_agents' \
+                        '--merge[Merge winning branch into base branch]' \
+                        '--rebase[Rebase & fast-forward merge winning branch]' \
+                        '--pr[Create GitHub Pull Request via gh CLI]' \
+                        '--keep-worktree[Keep winning agent worktree folder]' \
+                        '(-f --force)'{-f,--force}'[Force operations]'
+                    ;;
+                kill|kl)
+                    _arguments \
+                        '1:run-id:_fleet_active_runs' \
+                        '(-f --force)'{-f,--force}'[Force kill immediately]' \
+                        '--keep-branches[Preserve git branches]'
+                    ;;
+                attach|at)
+                    _arguments \
+                        '1:run-id:_fleet_active_runs'
+                    ;;
+                logs|log)
+                    _arguments \
+                        '1:run-id:_fleet_active_runs' \
+                        '2:agent:_fleet_agents' \
+                        '3:lines:_message "number of lines (e.g. 100)"'
+                    ;;
+                doctor|heal)
+                    _message "No options required"
+                    ;;
+                ls|list)
+                    _message "No options required"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_fleet "$@"

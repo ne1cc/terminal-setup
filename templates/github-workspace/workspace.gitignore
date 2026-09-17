@@ -1,0 +1,10 @@
+# Scratch work — ignore throwaway artifacts
+node_modules/
+.venv/
+venv/
+__pycache__/
+target/
+dist/
+.env
+.env.local
+.DS_Store

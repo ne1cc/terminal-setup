@@ -1,0 +1,215 @@
+# ==============================================================================
+# ALACRITTY CONFIGURATION — TMUX + VIBRANCY OPTIMIZED
+# Managed via GNU Stow: ~/Github/terminal-configs → $HOME
+# Platform: Linux (Wayland/X11 compositor required for blur)
+# ==============================================================================
+
+# ==============================================================================
+# WINDOW
+# ==============================================================================
+[window]
+
+# None: removes the OS titlebar entirely on Linux — tmux status bar at top
+# acts as the window header. On macOS use "Transparent" instead.
+# Drag the window by holding Super and clicking anywhere inside it.
+decorations = "None"
+
+# No padding — tmux status bars align flush to screen edges
+padding = { x = 0, y = 0 }
+
+# Give tmux full canvas immediately on launch
+startup_mode = "Maximized"
+
+# Let tmux own the title; suppress Alacritty's own dynamic title updates
+dynamic_title = false
+
+# ---------------------------------------------------------------------------
+# Vibrancy / Glass Effect (mirrors Ghostty background-opacity + blur)
+#
+# opacity: 0.0 = fully transparent, 1.0 = fully opaque. 0.78 ≈ Ghostty's 88%
+#   slightly darker for tmux legibility.
+# blur: requests the compositor to blur content behind the window.
+#   - Wayland (GNOME/KDE): works natively with Mutter/KWin blur plugin.
+#   - X11: requires picom with blur-method = "dual_kawase" (see note below).
+#   - i3/sway: enable blur in your picom/sway compositor config.
+#
+# Compositor setup hint for X11/picom:
+#   Add to picom.conf:
+#     blur-method = "dual_kawase";
+#     blur-strength = 8;
+#     blur-background = true;
+# ---------------------------------------------------------------------------
+opacity = 0.78
+blur = true
+
+
+# ==============================================================================
+# SCROLLING
+# ==============================================================================
+[scrolling]
+
+# Zero scrollback forces all scrolling through tmux copy-mode.
+# This prevents Alacritty's buffer from desyncing with tmux pane history
+# when switching windows.
+history = 0
+multiplier = 3
+
+
+# ==============================================================================
+# FONT
+# ==============================================================================
+[font]
+normal  = { family = "JetBrainsMono Nerd Font", style = "Regular" }
+bold    = { family = "JetBrainsMono Nerd Font", style = "Bold" }
+italic  = { family = "JetBrainsMono Nerd Font", style = "Italic" }
+size    = 13.0
+
+# Slightly tighter vertical cell to match Ghostty's adjust-cell-height = 3
+offset = { x = 0, y = 1 }
+
+
+# ==============================================================================
+# CURSOR
+# ==============================================================================
+[cursor]
+style = { shape = "Block", blinking = "Off" }
+
+# Unfocused window shows a hollow block so you can tell at a glance which
+# Alacritty window is active when running multiple instances.
+unfocused_hollow = true
+
+
+# ==============================================================================
+# COLORS: Tokyo Night — matches Ghostty + tmux status bar palette
+# background = #1a1b26 is the shared anchor color across all three configs.
+# ==============================================================================
+[colors.primary]
+background = "#1a1b26"
+foreground = "#a9b1d6"
+
+# dim_foreground is used when the terminal is unfocused
+dim_foreground = "#565f89"
+
+[colors.cursor]
+text   = "#1a1b26"
+cursor = "#c0caf5"
+
+[colors.vi_mode_cursor]
+text   = "#1a1b26"
+cursor = "#bb9af7"
+
+[colors.selection]
+# Subtle translucent-light-gray selection — like the standard OS highlight:
+# a soft gray sitting behind the text, low contrast so text stays visible.
+# (~30% white blended over the #1a1b26 background; Alacritty selection is
+# opaque-only, so this fixed gray mimics that translucent look.)
+text       = "CellForeground"
+background = "#5b5d68"
+
+[colors.normal]
+black   = "#32344a"
+red     = "#f7768e"
+green   = "#9ece6a"
+yellow  = "#e0af68"
+blue    = "#7aa2f7"
+magenta = "#bb9af7"
+cyan    = "#7dcfff"
+white   = "#a9b1d6"
+
+[colors.bright]
+black   = "#444b6a"
+red     = "#ff7a93"
+green   = "#b9f27c"
+yellow  = "#ff9e64"
+blue    = "#7da6ff"
+magenta = "#bb9af7"
+cyan    = "#0db9d7"
+white   = "#acb0d0"
+
+[colors.dim]
+black   = "#1d202f"
+red     = "#914c54"
+green   = "#5a7a29"
+yellow  = "#946b2d"
+blue    = "#44526b"
+magenta = "#5d4a78"
+cyan    = "#3b6b73"
+white   = "#565f89"
+
+
+# ==============================================================================
+# TERMINAL / ENVIRONMENT
+# ==============================================================================
+[terminal]
+# Launch tmux on every new Alacritty window, but DON'T mirror windows.
+# Logic:
+#   * no 'main' session yet            -> create it (first window)
+#   * 'main' exists but has no client  -> reattach (you reopened after closing)
+#   * 'main' is already attached       -> spin up a NEW independent session
+# This avoids tmux's multi-client mirroring (two clients on one session share the
+# same view) while keeping 'main' persistent across restarts. Routed through a
+# login zsh so .zprofile sets PATH (linuxbrew/tmux); tmux panes source .zshrc.
+shell = { program = "zsh", args = ["-l", "-c", "if ! tmux has-session -t main 2>/dev/null; then exec tmux new-session -s main; elif [ -z \"$(tmux list-clients -t main 2>/dev/null)\" ]; then exec tmux attach -t main; else exec tmux new-session; fi"] }
+
+
+# ==============================================================================
+# SELECTION
+# ==============================================================================
+[selection]
+# Copy-on-select — selecting text immediately puts it on the system clipboard
+# (mirrors Ghostty's copy-on-select = true). Inside tmux, the tmux mouse
+# bindings handle this + the "copied" toast; this covers Shift-bypass selection.
+save_to_clipboard = true
+
+
+# ==============================================================================
+# MOUSE
+# ==============================================================================
+[mouse]
+# Hide cursor while typing — mirrors Ghostty's mouse-hide-while-typing = true
+hide_when_typing = true
+
+
+# ==============================================================================
+# KEYBOARD HINTS (selection/copy shortcuts)
+# ==============================================================================
+[hints]
+# Alphabet used for hint label characters
+alphabet = "jfkdls;ahgurieowpq"
+
+[[hints.enabled]]
+command         = { program = "open", args = ["{hint}"] }
+hyperlinks      = true
+post_processing = true
+persist         = false
+mouse           = { enabled = true, mods = "None" }
+binding         = { key = "U", mods = "Control|Shift" }
+regex           = '(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file:|git://|ssh:|ftp://)[^ <>"\\^`{|}]+'
+
+[[keyboard.bindings]]
+key = "Return"
+mods = "Shift"
+chars = "\u001B\r"
+
+# Ctrl+Tab / Ctrl+Shift+Tab — explicit CSI sequences so tmux can catch them.
+# Mirrors Ghostty: keybind = ctrl+tab=esc:[27;5;9~
+[[keyboard.bindings]]
+key = "Tab"
+mods = "Control"
+chars = "\u001B[27;5;9~"
+
+[[keyboard.bindings]]
+key = "Tab"
+mods = "Control|Shift"
+chars = "\u001B[27;6;9~"
+
+# Ctrl+Shift+H / Ctrl+Shift+L — explicit CSI sequences so tmux switches windows instead of panes
+[[keyboard.bindings]]
+key = "H"
+mods = "Control|Shift"
+chars = "\u001B[27;6;72~"
+
+[[keyboard.bindings]]
+key = "L"
+mods = "Control|Shift"
+chars = "\u001B[27;6;76~"

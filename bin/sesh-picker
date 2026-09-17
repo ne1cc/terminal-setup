@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# sesh-picker — interactive fuzzy session picker using sesh and fzf
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+session=$(sesh list -t -c -z | fzf \
+  --no-sort --border-label ' sesh sessions ' --prompt '⚡  ' \
+  --header '  ^a all ^t tmux ^g configs ^x zoxide ^d tmux kill ^f find' \
+  --bind 'tab:down,btab:up' \
+  --bind 'ctrl-a:change-prompt(⚡  )+reload(sesh list)' \
+  --bind 'ctrl-t:change-prompt(🪟  )+reload(sesh list -t)' \
+  --bind 'ctrl-g:change-prompt(⚙️  )+reload(sesh list -c)' \
+  --bind 'ctrl-x:change-prompt(📁  )+reload(sesh list -z)' \
+  --bind 'ctrl-f:change-prompt(🔎  )+reload(fd -H -d 2 -t d -E .Trash . ~/Github)' \
+  --bind 'ctrl-d:execute(tmux kill-session -t {})+change-prompt(⚡  )+reload(sesh list)' \
+  --preview-window 'right:55%' \
+  --preview 'sesh preview {}')
+
+if [[ -n "${session:-}" ]]; then
+  sesh connect "$session"
+fi

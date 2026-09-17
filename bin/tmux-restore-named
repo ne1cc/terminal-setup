@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-restore-named — Interactive Named Snapshot Restorer with Markdown Previews
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+export LC_ALL="en_US.UTF-8"
+export LANG="en_US.UTF-8"
+
+RESURRECT_DIR="$HOME/.tmux/resurrect"
+mkdir -p "$RESURRECT_DIR"
+
+cd "$RESURRECT_DIR" || exit 1
+SNAPSHOTS=$(ls -t snapshot-*.txt 2>/dev/null || true)
+
+if [ -z "$SNAPSHOTS" ]; then
+    echo "No named snapshots found in $RESURRECT_DIR"
+    read -rp "Press Enter to exit..."
+    exit 0
+fi
+
+# Format list of snapshot names (strip snapshot- prefix and .txt suffix)
+NAMES=$(echo "$SNAPSHOTS" | sed -e 's/^snapshot-//' -e 's/\.txt$//')
+
+SELECTED_NAME=$(echo "$NAMES" | fzf --reverse \
+    --header="🔄 Select Named Snapshot to Restore" \
+    --prompt="Restore > " \
+    --preview="file=\"$RESURRECT_DIR/snapshot-{}.meta.md\"; if [ -f \"\$file\" ]; then bat --color=always --style=plain \"\$file\" 2>/dev/null || cat \"\$file\"; else cat \"$RESURRECT_DIR/snapshot-{}.txt\"; fi" \
+    --preview-window="right:60%:wrap")
+
+if [ -n "$SELECTED_NAME" ]; then
+    SNAPSHOT_FILE="$RESURRECT_DIR/snapshot-${SELECTED_NAME}.txt"
+    if [ -f "$SNAPSHOT_FILE" ]; then
+        cp "$SNAPSHOT_FILE" "$RESURRECT_DIR/last"
+        
+        if [ -f "$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh" ]; then
+            "$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh"
+        elif [ -f "$HOME/.tmux/resurrect/restore.sh" ]; then
+            "$HOME/.tmux/resurrect/restore.sh"
+        fi
+        
+        tmux display-message "✓ Restored snapshot: ${SELECTED_NAME} (Layout + Panes + Agents)"
+    fi
+fi

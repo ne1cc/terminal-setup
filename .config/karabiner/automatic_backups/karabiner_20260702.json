@@ -1,0 +1,31 @@
+{
+  "description": "Super + HJKL App/Window Focus Swapping",
+  "manipulators": [
+    {
+      "type": "basic",
+      "from": {
+        "key_code": "h",
+        "modifiers": { "mandatory": ["left_command", "left_option"] }
+      },
+      "to": [
+        {
+          "key_code": "grave_accent_and_tilde",
+          "modifiers": ["left_command", "left_shift"]
+        }
+      ]
+    },
+    {
+      "type": "basic",
+      "from": {
+        "key_code": "l",
+        "modifiers": { "mandatory": ["left_command", "left_option"] }
+      },
+      "to": [
+        {
+          "key_code": "grave_accent_and_tilde",
+          "modifiers": ["left_command"]
+        }
+      ]
+    }
+  ]
+}

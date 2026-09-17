@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# session-handoff — Enterprise-grade Session Handoff & State Snapshot Generator
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+TOPIC="${1:-}"
+CUSTOM_NOTES="${2:-}"
+
+if [ -z "$TOPIC" ]; then
+    if [ -n "${TMUX:-}" ]; then
+        TOPIC="$(tmux display-message -p '#{session_name}-#{window_name}')"
+    elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        TOPIC="$(git branch --show-current 2>/dev/null || basename "$(pwd)")"
+    else
+        TOPIC="$(basename "$(pwd)")"
+    fi
+fi
+
+# Clean topic string for filename
+SAFE_TOPIC=$(echo "$TOPIC" | tr ' /:' '---' | tr -cd 'A-Za-z0-9_-')
+DATE_STR=$(date +%Y-%m-%d)
+TIME_STR=$(date +%H:%M:%S)
+TIMESTAMP_ID="$(date +%Y%m%d_%H%M%S)"
+
+# Target directories (global under XDG data, per-repo in .handoff/)
+HANDOFF_GLOBAL="${XDG_DATA_HOME:-$HOME/.local/share}/session-handoff"
+OUTDIR_LOCAL=".handoff/sessions"
+GLOBAL_OUTFILE_DIR="$HANDOFF_GLOBAL"
+
+mkdir -p "$HANDOFF_GLOBAL"
+
+IS_GIT=0
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    IS_GIT=1
+    mkdir -p "$OUTDIR_LOCAL"
+    PRIMARY_OUTFILE="${OUTDIR_LOCAL}/${DATE_STR}-${SAFE_TOPIC}.md"
+    LATEST_LOCAL="${OUTDIR_LOCAL}/latest.md"
+else
+    PRIMARY_OUTFILE="${GLOBAL_OUTFILE_DIR}/${DATE_STR}-${SAFE_TOPIC}.md"
+    LATEST_LOCAL=""
+fi
+
+LATEST_GLOBAL="${HANDOFF_GLOBAL}/latest.md"
+
+# Build Markdown Handoff Document
+TMP_FILE=$(mktemp)
+
+{
+    echo "# 🚀 Session Handoff: ${SAFE_TOPIC}"
+    echo "**Created**: ${DATE_STR} ${TIME_STR} | **ID**: \`${TIMESTAMP_ID}\`"
+    echo "**Working Directory**: \`$(pwd)\`"
+    echo ""
+    echo "---"
+
+    if [ "$IS_GIT" -eq 1 ]; then
+        REPO_ROOT=$(git rev-parse --show-toplevel)
+        BRANCH=$(git branch --show-current 2>/dev/null || echo "detached")
+        UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "none")
+        
+        echo "## 🌳 Git & Branch Architecture"
+        echo "- **Repository Root**: \`${REPO_ROOT}\`"
+        echo "- **Active Branch**: \`${BRANCH}\` (Tracking: \`${UPSTREAM}\`)"
+        echo ""
+        echo "### Recent Commits"
+        echo '```'
+        git log -n 3 --oneline --decorate 2>/dev/null || echo "No commit history"
+        echo '```'
+        echo ""
+        echo "### Working Tree Changes Status"
+        echo '```'
+        git status -sb 2>/dev/null || true
+        echo '```'
+        echo ""
+        echo "### Uncommitted Diffs Summary"
+        echo '```'
+        git diff --stat 2>/dev/null || true
+        if [ -n "$(git diff --staged --stat 2>/dev/null)" ]; then
+            echo -e "\n[Staged Changes]:"
+            git diff --staged --stat
+        fi
+        echo '```'
+        echo ""
+    fi
+
+    echo "## ⚙️ Runtime & Environment Telemetry"
+    echo "- **Shell**: \`${SHELL}\`"
+    
+    # Detect language toolchain versions
+    ENV_INFO=""
+    command -v node >/dev/null 2>&1 && ENV_INFO+="Node: $(node --version 2>/dev/null || true) | "
+    command -v python3 >/dev/null 2>&1 && ENV_INFO+="Python: $(python3 --version 2>/dev/null | awk '{print $2}' || true) | "
+    command -v rustc >/dev/null 2>&1 && ENV_INFO+="Rust: $(rustc --version 2>/dev/null | awk '{print $2}' || true) | "
+    command -v go >/dev/null 2>&1 && ENV_INFO+="Go: $(go version 2>/dev/null | awk '{print $3}' || true) | "
+    
+    if [ -n "$ENV_INFO" ]; then
+        echo "- **Toolchains**: \`${ENV_INFO% | }\`"
+    fi
+
+    if [ -n "${VIRTUAL_ENV:-}" ]; then
+        echo "- **Active Virtualenv**: \`${VIRTUAL_ENV}\`"
+    fi
+
+    # Detect listening ports
+    LISTENING_PORTS=$(lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1 {print $1 " (PID " $2 "): " $9}' | head -n 4 || true)
+    if [ -n "$LISTENING_PORTS" ]; then
+        echo ""
+        echo "### Active Local Services"
+        echo '```'
+        echo "$LISTENING_PORTS"
+        echo '```'
+    fi
+
+    if [ -n "${TMUX:-}" ]; then
+        echo ""
+        echo "## 🖥️ Multiplexer (Tmux) Session State"
+        echo "- **Session**: \`$(tmux display-message -p '#{session_name}')\`"
+        echo "- **Window Index & Name**: \`$(tmux display-message -p '#{window_index}: #{window_name}')\`"
+        echo "- **Active Pane**: \`$(tmux display-message -p '#P: #{pane_current_command} (#{pane_current_path})')\`"
+        echo "- **Total Panes in Window**: \`$(tmux list-panes | wc -l | tr -d ' ')\`"
+    fi
+
+    echo ""
+    echo "## 📌 Progress, Open Tasks & Immediate Next Steps"
+    if [ -n "$CUSTOM_NOTES" ]; then
+        echo "**Session Notes**: ${CUSTOM_NOTES}"
+        echo ""
+    fi
+    echo "- [ ] **Resume Task**: Pick up remaining work for **${SAFE_TOPIC}**"
+    echo "- [ ] **Validation**: Run project test suite / verification build"
+    echo "- [ ] **Review**: Check unstaged diffs before staging changes"
+    echo ""
+    echo "---"
+    echo "### 🔄 Fast Resumption Prompt"
+    echo "> *\"Resume from the latest session handoff and continue implementation of ${SAFE_TOPIC}.\"*"
+} > "$TMP_FILE"
+
+# Atomic file moves
+cp "$TMP_FILE" "$PRIMARY_OUTFILE"
+ln -sf "${DATE_STR}-${SAFE_TOPIC}.md" "$LATEST_GLOBAL"
+
+if [ -n "$LATEST_LOCAL" ]; then
+    ln -sf "${DATE_STR}-${SAFE_TOPIC}.md" "$LATEST_LOCAL"
+fi
+
+rm -f "$TMP_FILE"
+
+if [ -n "${TMUX:-}" ]; then
+    tmux display-message "✓ Saved robust handoff: $PRIMARY_OUTFILE (and latest.md)"
+else
+    echo "✓ Saved robust handoff: $PRIMARY_OUTFILE"
+    echo "✓ Linked: ${LATEST_GLOBAL}"
+    [ -n "$LATEST_LOCAL" ] && echo "✓ Linked: ${LATEST_LOCAL}"
+fi

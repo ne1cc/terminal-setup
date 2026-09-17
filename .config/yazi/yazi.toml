@@ -1,0 +1,61 @@
+#:schema https://yazi-rs.github.io/schemas/yazi.json
+
+[mgr]
+# parent hidden, file list just wide enough for names, preview gets the rest
+ratio          = [ 0, 1, 4 ]
+sort_by        = "alphabetical"
+sort_sensitive = false
+sort_reverse   = false
+sort_dir_first = true
+show_hidden    = false
+show_symlink   = true
+scrolloff      = 5
+
+[preview]
+tab_size       = 2
+# Optimized dimensions: Dramatically reduces Kitty/Ghostty RGB transfer sizes
+# from ~65 MB per frame down to ~5-8 MB, making previews render almost instantaneously.
+max_width      = 2048
+max_height     = 1536
+image_delay    = 0
+image_filter   = "triangle"
+image_quality  = 75
+sixel_fraction = 15
+
+[tasks]
+micro_workers    = 10
+macro_workers    = 25
+bizarre_retry    = 5
+image_alloc      = 536870912  # 512MB RAM allocation for image preview cache
+image_bound      = [ 0, 0 ]
+suppress_preload = false
+
+
+
+[opener]
+edit = [
+	{ run = '${EDITOR:-nvim} %s', desc = "Edit", block = true, for = "unix" },
+]
+open = [
+	{ run = 'open %s', desc = "Open", for = "macos" },
+]
+quicklook = [
+	{ run = 'qlmanage -p "$@"', orphan = true, desc = "Quick Look", for = "macos" },
+]
+mupdf = [
+	{ run = 'mupdf "$@"', orphan = true, desc = "MuPDF", for = "macos" },
+	{ run = 'mupdf "$@"', orphan = true, desc = "MuPDF", for = "unix" },
+]
+play-in-terminal = [
+    { run = 'mpv --vo=t t %s', block = true, desc = "Play in terminal (CACA ASCII)" },
+    { run = 'mpv --vo=kitty %s', block = true, desc = "Play in terminal (Kitty graphics)" }
+]
+
+[open]
+rules = [
+    { mime = "application/pdf", use = [ "mupdf", "open", "quicklook" ] },
+    { url = "*.pdf",            use = [ "mupdf", "open", "quicklook" ] },
+    { mime = "video/*",         use = [ "open", "play-in-terminal" ] }
+]
+
+

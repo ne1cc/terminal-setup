@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# gh-ns-fork — fork owner/repo to your account, clone into ~/Github/<you>/<repo>
+# Sets origin=your fork, upstream=original (gh repo fork --clone behavior).
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: gh-ns-fork <owner>/<repo>" >&2
+  exit 2
+fi
+
+spec="$1"
+me="$(gh api user --jq .login)"
+repo="${spec#*/}"
+dest="${GITHUB_ROOT:-$HOME/Github}/$me/$repo"
+
+mkdir -p "$(dirname "$dest")"
+if [[ -d "$dest/.git" ]]; then
+  echo "already exists: $dest"
+  echo "Remotes:"
+  git -C "$dest" remote -v
+  exit 0
+fi
+
+# Clone into namespace path; gh fork --clone defaults to ./repo otherwise
+gh repo fork "$spec" --clone=false
+gh repo clone "$me/$repo" "$dest"
+git -C "$dest" remote add upstream "https://github.com/${spec}.git" 2>/dev/null || \
+  git -C "$dest" remote set-url upstream "https://github.com/${spec}.git"
+
+echo "Forked $spec → $dest"
+echo "Remotes:"
+git -C "$dest" remote -v

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-ports — Interactive Listening Ports & Local Dev Servers Inspector
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+if [ -z "${TMUX:-}" ]; then
+    echo "Error: Must be run inside tmux." >&2
+    exit 1
+fi
+
+PORTS_DATA=$(lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1 {print $1 "\t" $2 "\t" $3 "\t" $9}' | sort -u -k4,4)
+
+if [ -z "$PORTS_DATA" ]; then
+    tmux display-message "No active listening TCP ports found."
+    exit 0
+fi
+
+SELECTED=$(echo "$PORTS_DATA" | awk -F'\t' '{printf "%-15s | PID: %-7s | User: %-10s | %s\n", $1, $2, $3, $4}' | \
+    fzf --reverse --header="🌐 Listening Ports (ENTER to kill process, TAB to open in browser)" \
+        --prompt="Port > " \
+        --expect=tab)
+
+KEY=$(echo "$SELECTED" | head -n 1)
+LINE=$(echo "$SELECTED" | tail -n +2)
+
+if [ -z "$LINE" ]; then
+    exit 0
+fi
+
+PID=$(echo "$LINE" | awk -F'|' '{print $2}' | awk '{print $2}')
+PORT_ADDR=$(echo "$LINE" | awk -F'|' '{print $4}' | tr -d ' ')
+PORT_NUM=$(echo "$PORT_ADDR" | grep -oE '[0-9]+$' || true)
+
+if [ "$KEY" = "tab" ] && [ -n "$PORT_NUM" ]; then
+    URL="http://localhost:${PORT_NUM}"
+    open "$URL" 2>/dev/null || xdg-open "$URL" 2>/dev/null || true
+    tmux display-message "✓ Opened $URL in browser"
+else
+    if [ -n "$PID" ]; then
+        kill -9 "$PID" 2>/dev/null && tmux display-message "✓ Killed process (PID: $PID) on $PORT_ADDR" || tmux display-message "Failed to kill PID: $PID"
+    fi
+fi

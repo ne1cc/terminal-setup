@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# copylast — Instantly copy the output of the last terminal command to clipboard
+# ==============================================================================
+
+set -eo pipefail
+
+show_help() {
+    cat << 'EOF'
+Usage: copylast [OPTIONS]
+
+Copies the output of the previous terminal command to the system clipboard
+instantly (0 ms) directly from the terminal buffer without re-executing.
+
+Options:
+  -r, --raw      Preserve ANSI color / escape sequences
+  -h, --help     Show this help message
+
+Supported clipboard targets:
+  - pbcopy (macOS)
+  - wl-copy (Wayland)
+  - xclip / xsel (X11)
+  - clip.exe (WSL)
+  - OSC 52 (Terminal escape sequence fallback)
+EOF
+}
+
+RAW_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        -r|--raw)
+            RAW_MODE=1
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            ;;
+    esac
+done
+
+copy_to_clipboard() {
+    local text="$1"
+
+    if command -v pbcopy >/dev/null 2>&1; then
+        printf "%s" "$text" | pbcopy
+    elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null 2>&1; then
+        printf "%s" "$text" | wl-copy
+    elif command -v xclip >/dev/null 2>&1; then
+        printf "%s" "$text" | xclip -selection clipboard
+    elif command -v xsel >/dev/null 2>&1; then
+        printf "%s" "$text" | xsel --clipboard --input
+    elif [ -n "${IS_WSL:-}" ] && command -v clip.exe >/dev/null 2>&1; then
+        printf "%s" "$text" | clip.exe
+    fi
+
+    # Also emit OSC 52 sequence if inside tmux or supported terminal
+    if [ -n "$TMUX" ]; then
+        local b64
+        b64=$(printf "%s" "$text" | base64 | tr -d '\r\n')
+        printf "\033Ptmux;\033\033]52;c;%s\007\033\\" "$b64" 2>/dev/null || true
+    elif [ -n "$TERM" ]; then
+        local b64
+        b64=$(printf "%s" "$text" | base64 | tr -d '\r\n')
+        printf "\033]52;c;%s\007" "$b64" 2>/dev/null || true
+    fi
+}
+
+if [ -n "$TMUX" ]; then
+    start_abs=$(tmux show-options -p -v @copylast_start 2>/dev/null || true)
+    end_abs=$(tmux show-options -p -v @copylast_end 2>/dev/null || true)
+    cmd=$(tmux show-options -p -v @copylast_cmd 2>/dev/null || true)
+    curr_hist=$(tmux display-message -p "#{history_size}")
+
+    if [ -z "$start_abs" ] || [ -z "$end_abs" ]; then
+        echo "copylast: No recorded output from last command." >&2
+        exit 1
+    fi
+
+    s=$(( start_abs - curr_hist ))
+    e=$(( end_abs - curr_hist ))
+
+    if [ "$s" -gt "$e" ]; then
+        echo "copylast: Last command ('${cmd:-unknown}') produced no output."
+        exit 0
+    fi
+
+    capture_args=(-p -J)
+    if [ "$RAW_MODE" -eq 1 ]; then
+        capture_args+=(-e)
+    fi
+
+    output=$(tmux capture-pane "${capture_args[@]}" -S "$s" -E "$e")
+    # Strip trailing whitespace and newlines
+    output="${output%"${output##*[![:space:]]}"}"
+
+    if [ -z "$output" ]; then
+        echo "copylast: Output was empty for '${cmd:-unknown}'"
+        exit 0
+    fi
+
+    copy_to_clipboard "$output"
+
+    line_count=$(printf "%s\n" "$output" | wc -l | tr -d ' ')
+    byte_count=$(printf "%s" "$output" | wc -c | tr -d ' ')
+    echo "✓ Copied output of '${cmd}' (${line_count} lines, ${byte_count} bytes) to clipboard"
+    exit 0
+else
+    echo "copylast: Not inside a tmux session. Cannot capture pane history." >&2
+    exit 1
+fi

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-open-path — Extract file paths & stacktrace locations from screen and jump
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+if [ -z "${TMUX:-}" ]; then
+    echo "Error: Must be run inside tmux." >&2
+    exit 1
+fi
+
+# Capture last 2000 lines of scrollback
+BUFFER=$(tmux capture-pane -p -S -2000 2>/dev/null || true)
+
+# Extract file paths (with optional :line:col suffixes) that actually exist on disk
+RAW_PATHS=$(echo "$BUFFER" | grep -oE '([a-zA-Z0-9_\.\/-]+\.[a-zA-Z0-9_]+)(:[0-9]+)?(:[0-9]+)?' | tr -d ' ' | sort -u || true)
+
+VALID_ITEMS=""
+while IFS= read -r item; do
+    [ -z "$item" ] && continue
+    file=$(echo "$item" | cut -d: -f1)
+    if [ -f "$file" ]; then
+        VALID_ITEMS+="$item"$'\n'
+    fi
+done <<< "$RAW_PATHS"
+
+if [ -z "$VALID_ITEMS" ]; then
+    tmux display-message "No valid file paths found in visible buffer."
+    exit 0
+fi
+
+CHOSEN=$(echo -n "$VALID_ITEMS" | fzf --reverse --header="📂 Jump to File from Terminal Buffer" --prompt="Open > ")
+
+if [ -n "$CHOSEN" ]; then
+    file=$(echo "$CHOSEN" | cut -d: -f1)
+    line=$(echo "$CHOSEN" | cut -d: -f2 -s)
+    
+    if [ -n "$line" ] && [ "$line" -eq "$line" ] 2>/dev/null; then
+        tmux new-window -n "edit:$(basename "$file")" "nvim +$line '$file'"
+    else
+        tmux new-window -n "edit:$(basename "$file")" "nvim '$file'"
+    fi
+fi

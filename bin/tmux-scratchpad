@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-scratchpad — Instant floating scratchpad for thoughts, code snippets, notes
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+NOTES_DIR="$HOME/notes"
+mkdir -p "$NOTES_DIR"
+NOTE_FILE="$NOTES_DIR/scratchpad.md"
+
+if [ ! -f "$NOTE_FILE" ]; then
+    echo "# Quick Scratchpad" > "$NOTE_FILE"
+    echo "Created: $(date)" >> "$NOTE_FILE"
+    echo "" >> "$NOTE_FILE"
+fi
+
+${EDITOR:-nvim} "$NOTE_FILE"

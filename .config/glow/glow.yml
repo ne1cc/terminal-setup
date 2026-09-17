@@ -1,0 +1,5 @@
+style: "dark"       # or "light"; "auto" also works
+pager: true
+width: 100
+mouse: true
+showLineNumbers: false

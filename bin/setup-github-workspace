@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# setup-github-workspace — scaffold a ~/Github workspace for YOUR GitHub account.
+#
+# Creates the directory layout, installs starter templates, and (optionally)
+# wires per-owner git identity via includeIf. Owner resolution order:
+#   1. --owner <name>
+#   2. $GH_USER
+#   3. `gh api user` (requires gh auth login)
+#   4. interactive prompt
+#
+# Usage:
+#   setup-github-workspace                  # owner auto-detected
+#   setup-github-workspace --owner octocat
+
+set -euo pipefail
+
+DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GITHUB_ROOT="${GITHUB_ROOT:-$HOME/Github}"
+TEMPLATES="$DOTFILES/templates/github-workspace"
+OWNER="${GH_USER:-}"
+GITCONFIG="$HOME/.gitconfig"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --owner) OWNER="${2:?--owner requires a value}"; shift 2 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$OWNER" ]] && command -v gh >/dev/null 2>&1; then
+  OWNER=$(gh api user -q .login 2>/dev/null || true)
+fi
+
+if [[ -z "$OWNER" ]]; then
+  read -r -p "GitHub username for ~/Github/<username>: " OWNER || true
+  [[ -n "$OWNER" ]] || { echo "error: no owner given (pass --owner <name>, set GH_USER, or run: gh auth login)" >&2; exit 1; }
+fi
+
+if [[ ! -f "$TEMPLATES/README.md" ]]; then
+  echo "error: templates not found at $TEMPLATES (is the repo intact?)" >&2
+  exit 1
+fi
+
+OWNER_DIR="$GITHUB_ROOT/$OWNER"
+
+DIRS=(
+  "$OWNER_DIR"
+  "$GITHUB_ROOT/config/dotfiles"
+  "$GITHUB_ROOT/config/scripts"
+  "$GITHUB_ROOT/config/docs"
+  "$GITHUB_ROOT/explore"
+  "$GITHUB_ROOT/archive"
+  "$GITHUB_ROOT/_tools"
+  "$GITHUB_ROOT/workspace/sandboxes"
+  "$GITHUB_ROOT/workspace/datasets"
+)
+
+install_template() {
+  local src="$1" dest="$2"
+  if [[ ! -f "$dest" ]]; then
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+    echo "  created: $dest"
+  fi
+}
+
+echo "==> GitHub workspace -> $GITHUB_ROOT (owner: $OWNER)"
+
+for dir in "${DIRS[@]}"; do
+  mkdir -p "$dir"
+done
+echo "  directories: ${#DIRS[@]} paths ensured"
+
+install_template "$TEMPLATES/README.md" "$GITHUB_ROOT/README.md"
+install_template "$TEMPLATES/owner.README.md" "$OWNER_DIR/README.md"
+install_template "$TEMPLATES/workspace.gitignore" "$GITHUB_ROOT/workspace/.gitignore"
+install_template "$TEMPLATES/datasets.gitignore" "$GITHUB_ROOT/workspace/datasets/.gitignore"
+install_template "$TEMPLATES/datasets.README.md" "$GITHUB_ROOT/workspace/datasets/README.md"
+
+touch "$GITHUB_ROOT/_tools/archive-exclude.txt"
+
+# Per-owner git identity: give ~/Github/<owner>/ its own .gitconfig and include
+# it from ~/.gitconfig so users can set their name/email there.
+if [[ ! -f "$OWNER_DIR/.gitconfig" ]]; then
+  {
+    echo "# Git identity for repos under ~/Github/$OWNER/"
+    echo "# Set your details here:"
+    echo "[user]"
+    printf '\tname = Your Name\n'
+    printf '\temail = you@example.com\n'
+  } > "$OWNER_DIR/.gitconfig"
+  echo "  created: $OWNER_DIR/.gitconfig (edit name/email)"
+fi
+
+if [[ -f "$GITCONFIG" ]] && ! grep -q "gitdir:~/Github/$OWNER/" "$GITCONFIG"; then
+  {
+    echo ""
+    echo "# Per-owner identity for ~/Github/$OWNER (added by setup-github-workspace)"
+    echo "[includeIf \"gitdir:~/Github/$OWNER/\"]"
+    printf '\tpath = ~/Github/%s/.gitconfig\n' "$OWNER"
+  } >> "$GITCONFIG"
+  echo "  includeIf added: $GITCONFIG -> $OWNER_DIR/.gitconfig"
+fi
+
+echo "Done. Your repos: git clone git@github.com:$OWNER/<repo> $OWNER_DIR/<repo>"

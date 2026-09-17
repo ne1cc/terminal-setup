@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-save-named — Enterprise Named Snapshot & Full Environment State Saver
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+export LC_ALL="en_US.UTF-8"
+export LANG="en_US.UTF-8"
+
+NAME="${1:-}"
+if [ -z "$NAME" ]; then
+    echo "Error: Snapshot name required." >&2
+    exit 0
+fi
+
+SAFE_NAME=$(echo "$NAME" | tr ' /:' '---' | tr -cd 'A-Za-z0-9_-')
+RESURRECT_DIR="$HOME/.tmux/resurrect"
+mkdir -p "$RESURRECT_DIR"
+
+# 1. Trigger tmux-resurrect to capture all panes, layouts, and processes
+if [ -f "$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh" ]; then
+    "$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh"
+elif [ -f "$HOME/.tmux/resurrect/save.sh" ]; then
+    "$HOME/.tmux/resurrect/save.sh"
+fi
+
+# 2. Save named resurrect snapshot file
+if [ -f "$RESURRECT_DIR/last" ]; then
+    cp "$RESURRECT_DIR/last" "$RESURRECT_DIR/snapshot-${SAFE_NAME}.txt"
+fi
+
+# 3. Generate comprehensive markdown handoff & metadata snapshot
+if [ -x "$HOME/bin/session-handoff" ]; then
+    "$HOME/bin/session-handoff" "snapshot-${SAFE_NAME}" "Named Tmux & Environment Snapshot: ${SAFE_NAME}" >/dev/null 2>&1 || true
+fi
+
+# 4. Copy the generated handoff markdown as metadata alongside the snapshot
+DATE_STR=$(date +%Y-%m-%d)
+GLOBAL_HANDOFF="${XDG_DATA_HOME:-$HOME/.local/share}/session-handoff/${DATE_STR}-snapshot-${SAFE_NAME}.md"
+SNAPSHOT_META="$RESURRECT_DIR/snapshot-${SAFE_NAME}.meta.md"
+
+if [ -f "$GLOBAL_HANDOFF" ]; then
+    cp "$GLOBAL_HANDOFF" "$SNAPSHOT_META"
+elif [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/session-handoff/latest.md" ]; then
+    cp "${XDG_DATA_HOME:-$HOME/.local/share}/session-handoff/latest.md" "$SNAPSHOT_META"
+else
+    {
+        echo "# Snapshot: ${SAFE_NAME}"
+        echo "Created: $(date)"
+        echo "Tmux Session: $(tmux display-message -p '#{session_name}' 2>/dev/null || echo 'unknown')"
+    } > "$SNAPSHOT_META"
+fi
+
+if [ -n "${TMUX:-}" ]; then
+    tmux display-message "✓ Saved comprehensive snapshot: ${SAFE_NAME} (Layout + Git + Meta)"
+else
+    echo "✓ Saved comprehensive snapshot: ${SAFE_NAME}"
+fi

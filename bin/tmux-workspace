@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-workspace — Instant declarative IDE-like workspace layouts
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+TYPE="${1:-dev}" # dev, ai, triage
+
+if [ -z "${TMUX:-}" ]; then
+    echo "Error: Must be run inside tmux."
+    exit 1
+fi
+
+CURRENT_DIR="$(pwd)"
+
+case "$TYPE" in
+    dev)
+        # 3-pane layout: Editor left 65%, Dev Server top-right 35%, Shell bottom-right 35%
+        tmux split-window -h -l 35% -c "$CURRENT_DIR"
+        tmux split-window -v -l 50% -c "$CURRENT_DIR"
+        tmux select-pane -t :.1
+        tmux display-message "✓ Dev workspace initialized (Editor 65% + Stack 35%)"
+        ;;
+    ai)
+        # 2-pane side-by-side: Editor (60%) + Claude Code (40%)
+        tmux split-window -h -l 40% -c "$CURRENT_DIR" "claude"
+        tmux select-pane -t :.1
+        tmux display-message "✓ AI workspace initialized (Editor + Claude split)"
+        ;;
+    triage)
+        # 4-pane triage matrix: Lazygit, Editor, Logs/Server, Scratch Shell
+        tmux split-window -h -c "$CURRENT_DIR"
+        tmux split-window -v -c "$CURRENT_DIR"
+        tmux select-pane -t :.1
+        tmux split-window -v -c "$CURRENT_DIR"
+        tmux select-layout tiled
+        tmux display-message "✓ Triage workspace initialized (2x2 grid)"
+        ;;
+    *)
+        echo "Usage: tmux-workspace [dev|ai|triage]"
+        ;;
+esac

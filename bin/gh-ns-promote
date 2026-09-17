@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# gh-ns-promote — push a local project to github.com/<owner>/<name> and place it
+# in the namespace mirror ~/Github/<owner>/<name>.
+#
+# Usage:
+#   gh-ns-promote                     # promote cwd
+#   gh-ns-promote /path/to/project
+#   gh-ns-promote --name my-repo
+#   gh-ns-promote --public
+#   gh-ns-promote --owner <your-github-user>
+set -euo pipefail
+
+GITHUB_ROOT="${GITHUB_ROOT:-$HOME/Github}"
+OWNER="${GH_NS_OWNER:-$(gh api user -q .login 2>/dev/null || true)}"
+VISIBILITY="--private"
+NAME=""
+SRC=""
+
+usage() {
+  sed -n '2,12p' "$0" | sed 's/^# \?//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --public) VISIBILITY="--public"; shift ;;
+    --private) VISIBILITY="--private"; shift ;;
+    --name) NAME="${2:-}"; shift 2 ;;
+    --owner) OWNER="${2:-}"; shift 2 ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *)
+      if [[ -n "$SRC" ]]; then
+        echo "error: unexpected argument: $1" >&2; exit 2
+      fi
+      SRC="$1"; shift ;;
+  esac
+done
+
+SRC="$(cd "${SRC:-.}" && pwd)"
+if [[ ! -d "$SRC" ]]; then
+  echo "error: not a directory: $SRC" >&2
+  exit 1
+fi
+
+NAME="${NAME:-$(basename "$SRC")}"
+DEST="$GITHUB_ROOT/$OWNER/$NAME"
+
+if [[ ! "$NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: invalid repo name '$NAME'" >&2
+  exit 2
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "error: gh CLI required" >&2
+  exit 127
+fi
+
+# Ensure git repo
+if [[ ! -d "$SRC/.git" ]]; then
+  echo "→ git init (no repo yet)"
+  git -C "$SRC" init -b main
+fi
+
+# Ensure at least one commit (gh --push needs it)
+if ! git -C "$SRC" rev-parse HEAD >/dev/null 2>&1; then
+  if [[ -z "$(ls -A "$SRC" | grep -v '^\.git$' || true)" ]]; then
+    printf '# %s\n' "$NAME" > "$SRC/README.md"
+  fi
+  git -C "$SRC" add -A
+  git -C "$SRC" status -sb
+  git -C "$SRC" commit -m "chore: initial commit"
+fi
+
+# Abort if destination mirror path occupied by different project
+if [[ -d "$DEST/.git" && "$SRC" != "$DEST" ]]; then
+  echo "error: mirror path already exists: $DEST" >&2
+  exit 1
+fi
+
+# Remote already?
+existing_url="$(git -C "$SRC" remote get-url origin 2>/dev/null || true)"
+if [[ -n "$existing_url" ]]; then
+  echo "origin already set: $existing_url"
+  # If origin is already the target, just push + move
+  case "$existing_url" in
+    *"github.com/$OWNER/$NAME"*|*"github.com:$OWNER/$NAME"*)
+      echo "→ pushing existing origin"
+      git -C "$SRC" push -u origin HEAD
+      ;;
+    *)
+      echo "error: origin points elsewhere. Fix remotes manually or remove origin." >&2
+      echo "  git -C \"$SRC\" remote -v" >&2
+      exit 1
+      ;;
+  esac
+else
+  # Resolve GitHub owner (handles case or alias differences)
+  gh_owner="$OWNER"
+  auth_user=$(gh api user -q .login 2>/dev/null || true)
+  if ! gh user view "$gh_owner" >/dev/null 2>&1 && [[ -n "$auth_user" ]]; then
+    gh_owner="$auth_user"
+  fi
+
+  # Create on GitHub from local source
+  if gh repo view "$gh_owner/$NAME" >/dev/null 2>&1; then
+    echo "→ remote $gh_owner/$NAME exists; adding origin + push"
+    git -C "$SRC" remote add origin "https://github.com/$gh_owner/$NAME.git"
+    git -C "$SRC" push -u origin HEAD
+  else
+    echo "→ creating github.com/$gh_owner/$NAME ($VISIBILITY) and pushing"
+    # --source must be used from inside or with path; run in SRC
+    (
+      cd "$SRC"
+      gh repo create "$NAME" --source=. $VISIBILITY --remote=origin --push
+    )
+  fi
+fi
+
+# Move into namespace mirror if not already there
+if [[ "$SRC" != "$DEST" ]]; then
+  mkdir -p "$(dirname "$DEST")"
+  echo "→ moving $SRC → $DEST"
+  mv "$SRC" "$DEST"
+  SRC="$DEST"
+fi
+
+echo
+echo "Promoted."
+echo "  path:   $DEST"
+echo "  remote: https://github.com/$OWNER/$NAME"
+echo
+git -C "$DEST" remote -v
+git -C "$DEST" status -sb

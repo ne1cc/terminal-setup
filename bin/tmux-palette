@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-palette — Interactive Command Palette HUD for high-velocity workflows
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+if [ -z "${TMUX:-}" ]; then
+    echo "Error: Must be run inside tmux." >&2
+    exit 1
+fi
+
+MENU=$(cat << 'ACTIONS'
+🚀 Fleet Agent Swarm    | Parallel worktree swarm (claude)            | zsh -ic 'fleet ls; echo ""; read -k 1 "?Press any key to close..."'
+🌳 Launch Worktree       | Fast modal to create worktree with Neovim + Shell     | $HOME/bin/tmux-workmux-new
+⚡ Sesh Smart Picker     | Interactive fuzzy session switcher with preview (sesh)| $HOME/bin/sesh-picker
+🌳 Workmux Dashboard     | TUI dashboard of worktree agents and windows (workmux)| workmux dashboard
+🤖 Agent Matrix          | Launch 2/3/4 parallel AI agent swarm (claude)    | $HOME/bin/tmux-agent-matrix
+📝 Session Handoff        | Export git diffs & active session state to markdown   | $HOME/bin/session-handoff
+🛠️ Dev Workspace Layout  | Split window into 65% editor + 35% server & shell stack| $HOME/bin/tmux-workspace dev
+🚨 Triage Workspace Layout| Split window into 4-pane 2x2 incident/debugging grid  | $HOME/bin/tmux-workspace triage
+🌐 Listening Ports & Kill| Interactive port inspector & process killer          | $HOME/bin/tmux-ports
+📚 Cheatsheet & Docs     | Query cheat.sh documentation for any language/tool     | $HOME/bin/tmux-cheat
+⚙️ Edit Dotfiles         | Fuzzy select & edit config files (tmux, zsh, nvim)    | $HOME/bin/tmux-dotfiles
+📂 Jump to File on Screen| Extract file paths/stacktraces from terminal into nvim | $HOME/bin/tmux-open-path
+📓 Instant Scratchpad    | Floating note modal editing ~/notes/scratchpad.md      | $HOME/bin/tmux-scratchpad
+📊 Telemetry Dashboard   | Monitor CPU, memory, and running processes (btop/htop) | btop || htop || top
+💀 Interactive Kill      | Fuzzy process search & termination (fkill)            | zsh -ic fkill
+🐳 Docker Container Exec | Fuzzy search running containers & attach shell (fdocker) | zsh -ic fdocker
+🔑 SSH Host Connect      | Fuzzy search ~/.ssh/config and open ssh window (fssh) | zsh -ic fssh
+📁 Project Sessionizer   | Fuzzy search git repositories & launch session         | $HOME/bin/tmux-sessionizer
+🔀 Fuzzy Session Switch  | Fuzzy pick and jump to active tmux session             | tmux list-sessions -F '#S' | fzf --reverse | xargs tmux switch-client -t
+🪟 Fuzzy Window Switch   | Fuzzy pick and jump to window in current session       | tmux list-windows -F '#I: #W' | fzf --reverse | cut -d: -f1 | xargs tmux select-window -t
+🪟 Fuzzy Pane Switch     | Fuzzy pick and jump to pane (live preview)             | PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$HOME/.local/bin:$PATH $HOME/bin/tmux-switch-pane
+🪟 Pull / Join Panes     | Interactive fuzzy multi-select pane joiner (preview)   | PATH=/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$HOME/.local/bin:$PATH $HOME/bin/tmux-join-panes
+🚀 Break Window → Session | Move active window into a brand-new tmux session      | tmux command-prompt -I "#{window_name}" -p "Break window to session:" "run-shell 'sess=\"%%\" ; [ -z \"\$sess\" ] && sess=\"#{window_name}\" ; tmux new-session -d -s \"\$sess\" -c \"#{pane_current_path}\" && tmux move-window -k -s \"#{session_name}:#{window_index}\" -t \"\$sess\":1 && tmux switch-client -t \"\$sess\"'"
+👻 Break Pane → Ghostty  | Move active pane to new tmux session in new Ghostty win | $HOME/bin/tmux-breakout-ghostty $(tmux display-message -p '#{pane_id}')
+📦 Stash Active Window   | Move current window into background 'stash' session    | tmux has-session -t stash 2>/dev/null || tmux new-session -ds stash -n scratch; tmux move-window -t stash:
+📥 Unstash Window        | Retrieve stashed window back into current session      | tmux list-windows -t stash -F '#I: #W' 2>/dev/null | fzf --reverse | cut -d: -f1 | xargs -I{} tmux move-window -s stash:{} -t #{session_name}:
+🤖 Claude Popup          | Toggle persistent centered Claude assistant popup      | tmux attach-session -t claude-popup || tmux new-session -s claude-popup 'claude'
+🐙 Floating Lazygit      | Toggle centered 90% lazygit modal                      | lazygit
+💾 Save Session Snapshot | Prompt for custom snapshot name and backup state       | command-prompt -p "Save snapshot as:" "$HOME/bin/tmux-save-named %1"
+🔄 Restore Snapshot      | Fuzzy select and restore a named session snapshot      | $HOME/bin/tmux-restore-named
+📋 Archive Scrollback    | Dump last 30,000 lines of pane scrollback to file      | tmux capture-pane -S -30000; tmux save-buffer "$HOME/tmux_archive_$(date +%Y%m%d_%H%M%S).log"; tmux delete-buffer; tmux display-message "✓ Archived scrollback"
+ACTIONS
+)
+
+CHOICE=$(echo "$MENU" | fzf --reverse --header="⚡ TMUX COMMAND PALETTE (Type to search any action)" --prompt="Action > ")
+
+if [ -z "$CHOICE" ]; then
+    exit 0
+fi
+
+CMD=$(echo "$CHOICE" | awk -F '|' '{print $3}' | sed 's/^[ \t]*//;s/[ \t]*$//')
+
+eval "$CMD"

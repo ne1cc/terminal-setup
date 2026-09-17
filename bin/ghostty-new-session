@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ghostty-new-session:
+# Launched by Ghostty when opening windows (Cmd+N).
+# Creates a brand new, uniquely named tmux session so each new window has its own independent session.
+
+tmux_bin="$(command -v tmux 2>/dev/null || echo "/opt/homebrew/bin/tmux")"
+
+# Using YYYY-MM-DD_HH-MM format because tmux parses colons ':' as window/pane delimiters (session:window.pane)
+base_name="$(date +%Y-%m-%d_%H-%M)"
+session_name="$base_name"
+counter=2
+
+# Handle multiple windows launched within the same minute
+while "$tmux_bin" has-session -t "$session_name" 2>/dev/null; do
+    session_name="${base_name}-${counter}"
+    counter=$((counter + 1))
+done
+
+exec "$tmux_bin" new-session -s "$session_name"

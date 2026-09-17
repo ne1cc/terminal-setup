@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-cheat — Interactive Terminal Cheat Sheet & Developer Documentation HUD
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+LANGUAGES="bash zsh tmux git docker python typescript javascript rust golang sql jq sed awk curl find ffmpeg tar openssl ssh iptables"
+
+SELECTED_TOPIC=$(echo "$LANGUAGES" | tr ' ' '\n' | \
+    fzf --reverse --header="📚 Select or type language/tool (or write custom query like 'git/rebase')" \
+        --print-query --prompt="Topic > " | tail -n 1)
+
+if [ -z "$SELECTED_TOPIC" ]; then
+    exit 0
+fi
+
+read -rp "Specific search query for '$SELECTED_TOPIC' (or press ENTER for overview): " SUBQUERY
+
+if [ -n "$SUBQUERY" ]; then
+    CLEAN_QUERY=$(echo "$SUBQUERY" | tr ' ' '+')
+    TARGET="${SELECTED_TOPIC}/${CLEAN_QUERY}"
+else
+    TARGET="${SELECTED_TOPIC}"
+fi
+
+clear
+echo "Fetching cheat sheet for: $TARGET ..."
+echo "--------------------------------------------------------"
+curl -s "https://cheat.sh/${TARGET}" | less -R

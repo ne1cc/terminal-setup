@@ -1,0 +1,19 @@
+worktree_dir: .worktrees
+window_prefix: wm-
+files:
+  copy:
+  - .env
+  - .env.local
+  symlink:
+  - node_modules
+  - .venv
+  - target
+post_create:
+- git status --short
+panes:
+- command: 'WT="${WM_HANDLE:-$(basename "$PWD")}"; agyy -i "$WT"'
+  focus: true
+- command: 'WT="${WM_HANDLE:-$(basename "$PWD")}"; command -v qodercli >/dev/null 2>&1 && qodercli -i "$WT" || qoder -i "$WT"'
+  split: horizontal
+  focus: false
+nerdfont: true

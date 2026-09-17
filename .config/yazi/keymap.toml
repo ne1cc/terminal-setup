@@ -1,0 +1,124 @@
+#:schema https://yazi-rs.github.io/schemas/keymap.json
+#
+# `prepend_keymap` layers on top of Yazi's defaults, so everything built in
+# (y/p/d, tabs, sorting, `f` filter, `s` fd search, `S` rg search, ...) still works.
+
+# --- Navigation (vim keys — these mirror the defaults, kept here explicitly) ---
+
+[[mgr.prepend_keymap]]
+on = "k"
+run = "arrow prev"
+desc = "Move cursor up"
+
+[[mgr.prepend_keymap]]
+on = "j"
+run = "arrow next"
+desc = "Move cursor down"
+
+[[mgr.prepend_keymap]]
+on = "h"
+run = "leave"
+desc = "Go back to the parent directory"
+
+[[mgr.prepend_keymap]]
+on = "l"
+run = "enter"
+desc = "Enter the child directory or open the file"
+
+[[mgr.prepend_keymap]]
+on = "<C-u>"
+run = "arrow -50%"
+desc = "Move cursor up half a page"
+
+[[mgr.prepend_keymap]]
+on = "<C-d>"
+run = "arrow 50%"
+desc = "Move cursor down half a page"
+
+[[mgr.prepend_keymap]]
+on = "<C-b>"
+run = "arrow -100%"
+desc = "Move cursor up a full page"
+
+[[mgr.prepend_keymap]]
+on = "<C-f>"
+run = "arrow 100%"
+desc = "Move cursor down a full page"
+
+[[mgr.prepend_keymap]]
+on = [ "g", "g" ]
+run = "arrow top"
+desc = "Go to top"
+
+[[mgr.prepend_keymap]]
+on = "G"
+run = "arrow bot"
+desc = "Go to bottom"
+
+# --- Full-screen preview ---
+
+[[mgr.prepend_keymap]]
+on = "i"
+run = "plugin toggle-pane max-preview"
+desc = "Toggle full-screen preview"
+
+[[mgr.prepend_keymap]]
+on = "T"
+run = "plugin toggle-pane max-preview"
+desc = "Toggle full-screen preview"
+
+[[mgr.prepend_keymap]]
+on = "e"
+run = "plugin toggle-pane min-preview"
+desc = "Show or hide the preview pane"
+
+# --- Open menu & Interactive Opener ---
+
+[[mgr.prepend_keymap]]
+on   = "<C-o>"
+run  = "open --interactive"
+desc = "Open selection with interactive menu"
+
+[[mgr.prepend_keymap]]
+on   = "o"
+run  = "open --interactive"
+desc = "Open selection with interactive menu"
+
+[[mgr.prepend_keymap]]
+on   = "P"
+run  = 'shell "qlmanage -p \"$@\" >/dev/null 2>&1 &" --confirm'
+desc = "Open with macOS Quick Look"
+
+[[mgr.prepend_keymap]]
+on   = "M"
+run  = "open --opener=mupdf"
+desc = "Open in MuPDF"
+
+[[mgr.prepend_keymap]]
+on   = "O"
+run  = 'open --interactive'
+desc = "Open selection with interactive menu"
+
+# Images always fill the preview pane, so there are no zoom keys to bind.
+
+# --- Fuzzy search integration (fzf.yazi) ---
+
+[[mgr.prepend_keymap]]
+on   = [ "f", "f" ]
+run  = "plugin fzf"
+desc = "Fuzzy search files with fzf"
+
+[[mgr.prepend_keymap]]
+on   = [ "f", "g" ]
+run  = 'plugin fzf --args="--rg"'
+desc = "Fuzzy search file contents (ripgrep + fzf)"
+
+[[mgr.prepend_keymap]]
+on   = [ "f", "s" ]
+run  = '''
+shell --block --confirm '
+  file=$(rg --line-number --no-heading --color=always "" | fzf --ansi | cut -d: -f1)
+  [ -n "$file" ] && yazi --reveal "$file"
+'
+'''
+desc = "Search file content via ripgrep + fzf"

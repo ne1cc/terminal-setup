@@ -1,0 +1,19 @@
+# ~/.taskrc - Cross-platform Taskwarrior Config
+
+# --- Visual Theme & Output ---
+include __THEME_PATH__
+default.command=next                             # Running 'task' without args displays priority list
+column.padding=2                                 # Clean layout alignment
+
+# --- Developer Defaults ---
+default.project=dev                              # Default project scope
+search.case.sensitive=no                         # Case-insensitive searches
+
+# --- Task Lifecycle Policy ---
+gc=on                                            # Auto-purge completed tasks
+confirmation=no                                  # Disable prompt confirmations for rapid CLI workflow
+
+# --- Custom Urgency Coefficients ---
+urgency.due.coefficient=12.0
+urgency.project.coefficient=5.0
+urgency.user.tag.coefficient=3.0

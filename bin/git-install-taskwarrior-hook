@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+# Target repo directory (default to current working directory)
+TARGET_DIR="${1:-.}"
+
+if [[ ! -d "$TARGET_DIR/.git" ]]; then
+    echo "Error: $TARGET_DIR is not a git repository."
+    exit 1
+fi
+
+HOOK_FILE="$TARGET_DIR/.git/hooks/commit-msg"
+
+cat << 'EOF' > "$HOOK_FILE"
+#!/usr/bin/env bash
+# Git commit-msg hook for Taskwarrior auto-completion
+
+COMMIT_MSG_FILE="$1"
+MSG=$(cat "$COMMIT_MSG_FILE")
+
+if command -v task >/dev/null 2>&1; then
+    # Match patterns like "fixes task #12" or "closes task 12"
+    TASK_IDS=$(echo "$MSG" | grep -iE '(fix(es)?|close(s)?|complete(s)?)\s+task\s+#?[0-9]+' | grep -oE '[0-9]+')
+    
+    for ID in $TASK_IDS; do
+        if task "$ID" list >/dev/null 2>&1; then
+            task "$ID" done
+            echo "✓ Taskwarrior: Marked task #$ID as completed."
+        fi
+    done
+fi
+EOF
+
+chmod +x "$HOOK_FILE"
+echo "✓ Taskwarrior git hook installed to $HOOK_FILE"

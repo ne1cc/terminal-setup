@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-switch-pane: Fuzzy pane switcher with live scrollback preview
+# ==============================================================================
+
+set -euo pipefail
+
+raw_panes=$(
+    tmux list-panes -a -F \
+        '#{pane_id}|#{?pane_active,→, }|#{session_name}:#{window_name}.#{pane_index}|#{pane_current_command}|📁 #{b:pane_current_path}|#{?pane_title,#{pane_title},}' \
+        2>/dev/null || true
+)
+
+if [[ -z "$raw_panes" ]]; then
+    tmux display-message "No panes found."
+    exit 0
+fi
+
+filtered_panes=$(
+    echo "$raw_panes" | awk -F'|' '{ printf "%s|%s|%-24s | %-12s | %-24s | %s\n", $1, $2, $3, $4, $5, $6 }'
+)
+
+selected=$(
+    echo "$filtered_panes" | fzf \
+        --ansi \
+        --reverse \
+        --delimiter='|' \
+        --with-nth='2..' \
+        --preview='tmux capture-pane -ep -t {1} 2>/dev/null | tail -n 60' \
+        --preview-window='right:55%:wrap' \
+        --header='→ = current pane | ENTER: switch | ESC: cancel' \
+        --prompt='🔍 Switch Pane > ' \
+        | cut -d'|' -f1 | tr -d ' '
+)
+
+if [[ -n "$selected" ]]; then
+    tmux select-pane -t "$selected"
+fi

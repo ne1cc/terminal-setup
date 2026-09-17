@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Clear Kitty Graphics Protocol image overlays from Ghostty / Kitty terminal
+
+# 1. Direct escape sequence (works in raw terminal or with tmux passthrough)
+printf '\033_Ga=d,d=A\033\\' 2>/dev/null
+
+# 2. Tmux DCS passthrough sequence (for tmux panes)
+if [ -n "$TMUX" ]; then
+  printf '\033Ptmux;\033\033_Ga=d,d=A\033\033\\\033\\' 2>/dev/null
+fi
+
+# 3. Direct write to tmux client tty if available
+if command -v tmux >/dev/null 2>&1 && [ -n "$TMUX" ]; then
+  client_tty=$(tmux display-message -p "#{client_tty}" 2>/dev/null)
+  if [ -n "$client_tty" ] && [ -w "$client_tty" ]; then
+    printf '\033_Ga=d,d=A\033\\' > "$client_tty" 2>/dev/null
+  fi
+fi

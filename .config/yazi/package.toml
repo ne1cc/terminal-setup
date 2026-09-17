@@ -1,0 +1,17 @@
+[[plugin.deps]]
+use = "yazi-rs/plugins:toggle-pane"
+rev = "b9598e6"
+hash = "15e5b67a241172cbb86b8fbf9e63692"
+
+[[plugin.deps]]
+use = "yazi-rs/plugins:fzf"
+rev = "b9598e6"
+hash = "99aa06d3014798d86001c324468d497f"
+
+[[plugin.deps]]
+use = "yazi-rs/plugins:video-streaming"
+rev = "b9598e6"
+hash = "99aa06d3014798d86001c324468d497f"
+
+[flavor]
+deps = []

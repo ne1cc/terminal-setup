@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Ubuntu 23.10+ disables unprivileged user namespaces via AppArmor, which breaks
+# Chrome's sandbox inside mermaid-cli. Pass a config that runs headless Chrome
+# with --no-sandbox; it only ever renders local, user-authored diagrams.
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec /home/linuxbrew/.linuxbrew/bin/mmdc -p "$dir/puppeteer.json" "$@"

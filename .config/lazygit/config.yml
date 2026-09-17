@@ -1,0 +1,118 @@
+# ==============================================================================
+# LAZYGIT CONFIGURATION — TOKYO NIGHT PALETTE + AI WORKFLOW (AGY/CLAUDE/CODEX/QODER)
+# Managed via GNU Stow / setup.sh: ~/Github/2026/terminal-configs → $HOME
+# ==============================================================================
+
+gui:
+  showIcons: true
+  nerdFontsVersion: "3"
+  theme:
+    activeBorderColor:
+      - '#7dcfff'
+      - bold
+    inactiveBorderColor:
+      - '#565f89'
+    selectedLineBgColor:
+      - '#2d3149'
+    cherryPickedCommitBgColor:
+      - '#bb9af7'
+    cherryPickedCommitFgColor:
+      - '#7dcfff'
+    unstagedChangesColor:
+      - '#f7768e'
+    defaultFgColor:
+      - '#a9b1d6'
+
+git:
+  pagers:
+    - colorArg: always
+      pager: delta --dark --paging=never
+  overrideGpg: true
+
+os:
+  editCommand: 'nvim'
+  edit: 'nvim {{filename}}'
+  editAtLine: 'nvim +{{line}} {{filename}}'
+  editAtLineDIReg: 'nvim +{{line}} {{filename}}'
+
+customCommands:
+  # --- AI Commit Generator (Antigravity agy) ---
+  - key: '<c-a>'
+    description: 'Generate conventional commit message with Antigravity (agy)'
+    command: 'agy -p "Summarize these staged git changes and format as a concise conventional commit message title and short description"'
+    context: 'files'
+    output: terminal
+
+  # --- AI Code Review / Analysis (Claude CLI) ---
+  - key: 'C'
+    description: 'Run Claude AI diff review on staged changes'
+    command: 'git diff --staged | claude "Review this git diff for potential bugs, edge cases, and performance issues."'
+    context: 'files'
+    output: terminal
+
+  # --- AI Code Explanation (OpenAI Codex CLI) ---
+  - key: 'X'
+    description: 'Analyze commit or branch changes with OpenAI Codex'
+    command: 'codex "Analyze the git changes on branch {{.SelectedLocalBranch.Name}} and explain the architecture impact."'
+    context: 'localBranches'
+    output: terminal
+
+  # --- AI Qoder Audit (qodercli) ---
+  - key: 'Q'
+    description: 'Run Qoder AI audit on staged code changes'
+    command: 'git diff --staged | qodercli "Audit these code changes"'
+    context: 'files'
+    output: terminal
+
+  # --- GitHub CLI Integration ---
+  - key: 'N'
+    description: 'Create GitHub Pull Request with gh --fill'
+    command: 'gh pr create --fill'
+    context: 'global'
+    loadingText: 'Creating GitHub Pull Request...'
+    output: terminal
+
+  - key: 'O'
+    description: 'Checkout GitHub PR for selected branch'
+    command: 'gh pr checkout {{.SelectedLocalBranch.Name}}'
+    context: 'localBranches'
+    loadingText: 'Checking out PR...'
+    output: terminal
+
+  # --- Clipboard Tools ---
+  - key: '<c-y>'
+    description: 'Copy full contents of selected file to clipboard'
+    command: 'cat {{.SelectedFile.Name}} | (xclip -selection clipboard 2>/dev/null || pbcopy 2>/dev/null || xsel -b 2>/dev/null)'
+    context: 'files'
+    loadingText: 'Copying file contents...'
+
+  - key: '<c-y>'
+    description: 'Copy full contents of selected file to clipboard'
+    command: 'cat {{.SelectedCommitFile.Name}} | (xclip -selection clipboard 2>/dev/null || pbcopy 2>/dev/null || xsel -b 2>/dev/null)'
+    context: 'commitFiles'
+    loadingText: 'Copying file contents...'
+
+  - key: 'Y'
+    description: 'Copy diff patch of selected file'
+    command: 'git diff {{.SelectedFile.Name}} | (xclip -selection clipboard 2>/dev/null || pbcopy 2>/dev/null || xsel -b 2>/dev/null)'
+    context: 'files'
+    loadingText: 'Copying file diff...'
+
+  - key: 'Y'
+    description: 'Copy patch of commit file'
+    command: 'git show {{.SelectedLocalCommit.Hash}} -- {{.SelectedCommitFile.Name}} | (xclip -selection clipboard 2>/dev/null || pbcopy 2>/dev/null || xsel -b 2>/dev/null)'
+    context: 'commitFiles'
+    loadingText: 'Copying commit file diff...'
+
+  # --- Drop Commit Custom Command ---
+  - key: 'd'
+    context: 'commits'
+    command: 'git reset --hard {{.SelectedLocalCommit.Hash}}^'
+    description: 'Drop selected local commit (hard reset to parent)'
+    loadingText: 'Dropping commit...'
+    prompts:
+      - type: 'confirm'
+        title: 'Drop Local Commit'
+        body: 'PERMANENTLY drop local commit {{.SelectedLocalCommit.Hash}}?'
+
+

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-join-panes: Interactive Fuzzy Multi-Select Pane Joiner with Live Buffer Preview
+# ==============================================================================
+
+set -euo pipefail
+
+CURRENT_PANE="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)}"
+
+# Fetch all panes across all sessions/windows
+# Format: pane_id | Session:Window.Pane | Command | Folder | Title
+raw_panes=$(tmux list-panes -a -F "#{pane_id}|#{session_name}:#{window_name}.#{pane_index}|#{pane_current_command}|📁 #{b:pane_current_path}|#{pane_title}" 2>/dev/null || true)
+
+if [[ -z "$raw_panes" ]]; then
+    tmux display-message "No panes found."
+    exit 0
+fi
+
+# Filter out current pane and format into aligned columns
+filtered_panes=$(echo "$raw_panes" | grep -v "^${CURRENT_PANE}|" | awk -F"|" '{ printf "%s|%-22s | %-12s | %-22s | %s\n", $1, $2, $3, $4, $5 }' || true)
+
+if [[ -z "$filtered_panes" ]]; then
+    tmux display-message "No other panes available to join."
+    exit 0
+fi
+
+# Run fzf with multi-select, live buffer preview, and keybindings
+selected=$(echo "$filtered_panes" | fzf \
+    --multi \
+    --ansi \
+    --reverse \
+    --delimiter='|' \
+    --with-nth='2..' \
+    --preview='tmux capture-pane -ep -t {1} 2>/dev/null | tail -n 60' \
+    --preview-window='right:55%:wrap' \
+    --header='TAB: Select/Deselect | Ctrl-A: Select All | ENTER: Join & Tile | ESC: Cancel' \
+    --prompt='🔍 Join Panes > ' \
+    --bind='ctrl-a:select-all,ctrl-d:deselect-all' \
+    | cut -d'|' -f1 | tr -d ' ')
+
+if [[ -n "$selected" ]]; then
+    count=0
+    for pane_id in $selected; do
+        if [[ -n "$pane_id" ]]; then
+            tmux join-pane -s "$pane_id"
+            count=$((count + 1))
+        fi
+    done
+    tmux select-layout tiled
+    tmux display-message "✓ Successfully joined $count pane(s)"
+fi

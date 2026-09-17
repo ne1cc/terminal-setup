@@ -1,0 +1,5 @@
+# sesh configuration (~/.config/sesh/sesh.toml)
+
+[[session]]
+name = "terminal-configs"
+path = "~/dotfiles"

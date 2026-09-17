@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-dotfiles — Interactive Dotfiles Switcher & Live Config Editor
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+DOTFILES_DIR="$HOME/Github/config/terminal-configs"
+
+CONFIGS=$(cat << 'LIST'
+.tmux.conf              | Tmux Configuration & Keybindings
+.zshrc                  | Zsh Shell Configuration, Aliases & Functions
+.p10k.zsh               | Powerlevel10k Prompt Customizations
+.config/alacritty/alacritty.toml | Alacritty Terminal Config
+.config/ghostty/config  | Ghostty Terminal Config
+.config/karabiner/karabiner.json | Karabiner-Elements Hardware Remappings
+.config/lazygit/config.yml | Lazygit AI & Custom Keybindings
+.config/nvim/lua/polish.lua | Neovim Custom Settings & Polish
+SHORTCUTS.md            | Master Terminal Cheatsheet
+LIST
+)
+
+CHOICE=$(echo "$CONFIGS" | fzf --reverse --header="⚙️ Select Dotfile / Config to Edit" --prompt="Edit > ")
+
+if [ -z "$CHOICE" ]; then
+    exit 0
+fi
+
+REL_FILE=$(echo "$CHOICE" | awk -F'|' '{print $1}' | tr -d ' ')
+TARGET_FILE="${DOTFILES_DIR}/${REL_FILE}"
+
+if [ -f "$TARGET_FILE" ]; then
+    ${EDITOR:-nvim} "$TARGET_FILE"
+    
+    # Auto-reload relevant runtime if modifying tmux or karabiner
+    if [[ "$REL_FILE" == ".tmux.conf" ]]; then
+        tmux source-file ~/.tmux.conf 2>/dev/null && tmux display-message "✓ Reloaded ~/.tmux.conf"
+    fi
+fi

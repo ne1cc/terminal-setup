@@ -1,0 +1,38 @@
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+[credential "https://github.com"]
+	helper = !gh auth git-credential
+[credential "https://gist.github.com"]
+	helper = !gh auth git-credential
+
+[core]
+	pager = delta
+
+[init]
+	defaultBranch = main
+
+[pull]
+	ff = only
+
+[interactive]
+	singleKey = true
+
+[delta]
+	navigate = true
+	light = false
+	side-by-side = true
+	line-numbers = true
+
+[alias]
+	co = checkout
+	sw = switch
+	rs = restore
+	br = branch
+	st = status -sb
+	cm = commit -m
+
+# Per-namespace identities (optional): when setup-github-workspace runs with
+# --with-workspace it appends includeIf blocks for ~/Github/<owner>/ here.

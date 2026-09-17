@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# install — end-to-end installer for the terminal-setup dotfiles
+#
+# Quick start (fresh machine):
+#   git clone https://github.com/ne1cc/terminal-setup ~/dotfiles
+#   cd ~/dotfiles && ./install
+#
+# Flags:
+#   --with-workspace  also scaffold ~/Github/<your-username> (uses gh or prompts)
+#   --skip-packages   do not run brew bundle
+#   --skip-plugins    do not install TPM / sync Neovim plugins
+#   --yes             assume yes for all prompts
+#   --dry-run         pass --dry-run to setup.sh (no changes made)
+# ==============================================================================
+
+set -euo pipefail
+
+GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'
+BOLD='\033[1m'; NC='\033[0m'
+
+header() { echo -e "\n${BLUE}${BOLD}==>${NC} ${BOLD}$*${NC}"; }
+ok()     { echo -e "  ${GREEN}✓${NC} $*"; }
+info()   { echo -e "  ${CYAN}→${NC} $*"; }
+warn()   { echo -e "  ${YELLOW}!${NC} $*"; }
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+WITH_WORKSPACE=false
+SKIP_PACKAGES=false
+SKIP_PLUGINS=false
+ASSUME_YES=false
+DRY_RUN=false
+
+usage() { sed -n '2,19p' "$0" | sed 's/^# \?//'; }
+
+for arg in "$@"; do
+  case "$arg" in
+    --with-workspace) WITH_WORKSPACE=true ;;
+    --skip-packages)  SKIP_PACKAGES=true ;;
+    --skip-plugins)   SKIP_PLUGINS=true ;;
+    --yes|-y)         ASSUME_YES=true ;;
+    --dry-run)        DRY_RUN=true ;;
+    -h|--help)        usage; exit 0 ;;
+    *) echo "unknown option: $arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+confirm() {
+  if "$ASSUME_YES" || "$DRY_RUN"; then return 0; fi
+  read -r -p "$1 [y/N]: " -n 1 reply; echo
+  [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+# ------------------------------------------------------------------------------
+# 0. Platform
+# ------------------------------------------------------------------------------
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  PLATFORM=macOS
+elif grep -qi microsoft /proc/version 2>/dev/null; then
+  PLATFORM=WSL
+else
+  PLATFORM=Linux
+fi
+
+echo -e "${BOLD}terminal-setup installer${NC} — ${CYAN}$PLATFORM${NC}"
+echo "Repo: $REPO_DIR"
+
+if [[ "$REPO_DIR" != "$HOME/dotfiles" ]]; then
+  warn "Repo is not at ~/dotfiles — .zprofile defaults \$DOTFILES to ~/dotfiles."
+  info "Clone there (recommended) or edit DOTFILES in ~/.zprofile after install."
+fi
+
+if "$DRY_RUN"; then warn "DRY RUN — no changes will be made"; fi
+
+# ------------------------------------------------------------------------------
+# 1. Git + zsh
+# ------------------------------------------------------------------------------
+header "Prerequisites"
+command -v git >/dev/null 2>&1 && ok "git" || { echo "git is required. Install it first (macOS: xcode-select --install)." >&2; exit 1; }
+
+if command -v zsh >/dev/null 2>&1; then
+  ok "zsh ($(zsh --version | awk '{print $2}'))"
+elif "$DRY_RUN"; then
+  warn "[dry-run] zsh missing — would install via Homebrew"
+elif command -v brew >/dev/null 2>&1; then
+  info "Installing zsh via Homebrew"
+  brew install zsh
+else
+  echo "zsh is required. Install it (apt install zsh / brew install zsh) and re-run." >&2
+  exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# 2. Homebrew
+# ------------------------------------------------------------------------------
+header "Homebrew"
+if command -v brew >/dev/null 2>&1; then
+  ok "already installed"
+elif [[ "$PLATFORM" == "macOS" ]]; then
+  if "$DRY_RUN"; then
+    info "[dry-run] would install Homebrew"
+  else
+    info "Installing Homebrew (will ask for your password)"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    eval "$(/opt/homebrew/bin/brew shellenv bash 2>/dev/null || /usr/local/bin/brew shellenv bash)"
+  fi
+elif [[ -x "/home/linuxbrew/.linuxbrew/bin/brew" ]]; then
+  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
+  ok "Linuxbrew found"
+else
+  warn "Homebrew not found — package installation will be skipped."
+  info "Install it from https://docs.brew.sh then re-run ./install"
+  SKIP_PACKAGES=true
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Oh My Zsh + Powerlevel10k
+# ------------------------------------------------------------------------------
+header "Oh My Zsh"
+ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+if "$DRY_RUN"; then
+  info "[dry-run] would install Oh My Zsh if missing"
+elif [[ -d "$HOME/.oh-my-zsh" ]]; then
+  ok "already installed"
+else
+  info "Installing Oh My Zsh (unattended)"
+  RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+fi
+
+header "Powerlevel10k"
+if "$DRY_RUN"; then
+  info "[dry-run] would clone powerlevel10k if missing"
+elif [[ -d "$ZSH_CUSTOM/themes/powerlevel10k" ]]; then
+  ok "already cloned"
+else
+  git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$ZSH_CUSTOM/themes/powerlevel10k"
+  ok "cloned to $ZSH_CUSTOM/themes/powerlevel10k"
+fi
+
+# ------------------------------------------------------------------------------
+# 4. Packages (brew bundle) + link configs + plugins — via setup.sh
+# ------------------------------------------------------------------------------
+SETUP_ARGS=()
+if ! "$SKIP_PACKAGES"; then
+  if confirm "Install all packages from the Brewfile now?"; then
+    SETUP_ARGS+=("--install-packages")
+  else
+    warn "Skipped. Run later: ./setup.sh --install-packages"
+  fi
+fi
+"$WITH_WORKSPACE" && SETUP_ARGS+=("--with-workspace")
+"$SKIP_PLUGINS" && SETUP_ARGS+=("--skip-plugins")
+"$DRY_RUN" && SETUP_ARGS+=("--dry-run")
+
+header "Linking dotfiles + packages"
+"$REPO_DIR/setup.sh" "${SETUP_ARGS[@]}"
+
+# ------------------------------------------------------------------------------
+# 5. Default shell
+# ------------------------------------------------------------------------------
+if [[ "$(basename "${SHELL:-}")" != "zsh" && "$PLATFORM" != "WSL" ]] && ! "$DRY_RUN"; then
+  header "Default shell"
+  if confirm "Set zsh as your default shell (needs your password)?"; then
+    chsh -s "$(command -v zsh)" && ok "default shell: zsh" || warn "chsh failed — run: chsh -s \$(which zsh)"
+  fi
+fi
+
+# ------------------------------------------------------------------------------
+# Done
+# ------------------------------------------------------------------------------
+echo -e "\n${GREEN}${BOLD}✓ Install complete!${NC}"
+echo -e "${CYAN}Next steps:${NC}"
+echo "  1. Restart your terminal (or: exec zsh)"
+echo "  2. Run 'p10k configure' to set up the prompt font/theme"
+echo -n "  3. "
+if command -v gh >/dev/null 2>&1; then
+  echo "Run 'gh auth login' to enable gh-ns-* workspace tools"
+else
+  echo "Install gh (brew install gh) and run 'gh auth login' for the gh-ns-* tools"
+fi
+if "$WITH_WORKSPACE"; then
+  echo "  4. Edit ~/Github/<your-username>/.gitconfig with your name/email"
+fi

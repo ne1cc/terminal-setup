@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tmux-agent-matrix — Interactive AI Agent Swarm & Parallel Workspace Orchestrator
+# ==============================================================================
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+if [ -z "${TMUX:-}" ]; then
+    echo "Error: tmux-agent-matrix must be run inside a tmux session." >&2
+    exit 1
+fi
+
+CURRENT_DIR="$(pwd)"
+LAYOUT="${1:-}"
+AGENT="${2:-claude}"
+
+# If no layout argument is supplied, present an interactive fzf menu
+if [ -z "$LAYOUT" ]; then
+    CHOICE=$(cat << 'OPTIONS' | fzf --reverse --header="🤖 Select Parallel Agent Workspace Matrix" --prompt="Matrix > "
+2-Claude        | 2-Pane Side-by-Side (50/50 Claude Code)
+3-Claude        | 3-Pane Stack (50% Main + 2 Stacked Claude)
+4-Claude        | 4-Pane 2x2 Grid (4 Parallel Claude Agents)
+OPTIONS
+    )
+
+    if [ -z "$CHOICE" ]; then
+        exit 0
+    fi
+
+    case "$CHOICE" in
+        2-Claude*)        LAYOUT="2"; AGENT="claude" ;;
+        3-Claude*)        LAYOUT="3"; AGENT="claude" ;;
+        4-Claude*)        LAYOUT="4"; AGENT="claude" ;;
+        *)                exit 0 ;;
+    esac
+fi
+
+TIME_ID="$(date +%H%M)"
+WINDOW_NAME="matrix-${TIME_ID}"
+
+# Create the window in background first
+if [ "$LAYOUT" = "2" ]; then
+    NEW_WIN=$(tmux new-window -d -P -F "#{window_id}" -n "$WINDOW_NAME" -c "$CURRENT_DIR" "$AGENT")
+    tmux split-window -t "$NEW_WIN" -h -c "$CURRENT_DIR" "$AGENT"
+    tmux select-layout -t "$NEW_WIN" even-horizontal
+elif [ "$LAYOUT" = "3" ]; then
+    NEW_WIN=$(tmux new-window -d -P -F "#{window_id}" -n "$WINDOW_NAME" -c "$CURRENT_DIR" "$AGENT")
+    tmux split-window -t "$NEW_WIN" -h -c "$CURRENT_DIR" "$AGENT"
+    tmux split-window -t "$NEW_WIN" -v -c "$CURRENT_DIR" "$AGENT"
+elif [ "$LAYOUT" = "4" ]; then
+    NEW_WIN=$(tmux new-window -d -P -F "#{window_id}" -n "$WINDOW_NAME" -c "$CURRENT_DIR" "$AGENT")
+    tmux split-window -t "$NEW_WIN" -h -c "$CURRENT_DIR" "$AGENT"
+    tmux split-window -t "$NEW_WIN" -v -c "$CURRENT_DIR" "$AGENT"
+    PANE_FIRST=$(tmux list-panes -t "$NEW_WIN" -F "#{pane_id}" | head -n 1)
+    tmux split-window -t "$PANE_FIRST" -v -c "$CURRENT_DIR" "$AGENT"
+    tmux select-layout -t "$NEW_WIN" tiled
+else
+    NEW_WIN=$(tmux new-window -d -P -F "#{window_id}" -n "$WINDOW_NAME" -c "$CURRENT_DIR" "$AGENT")
+fi
+
+# Switch focus cleanly to the new window
+tmux select-window -t "$NEW_WIN"
+tmux select-pane -t "${NEW_WIN}.1"
+tmux display-message "✓ Activated Agent Matrix (${LAYOUT} panes: ${AGENT})"

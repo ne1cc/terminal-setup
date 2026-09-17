@@ -1,0 +1,7 @@
+# Data sets: keep raw data out of git
+data/
+*.csv
+*.parquet
+*.duckdb
+*.db
+.DS_Store

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# gh-ns-status — local WIP projects + mirror drift for synced owners
+set -euo pipefail
+
+GITHUB_ROOT="${GITHUB_ROOT:-$HOME/Github}"
+PROJECTS="$GITHUB_ROOT/_local/projects"
+
+echo "══ Local WIP (_local/projects) ══"
+if [[ -d "$PROJECTS" ]]; then
+  found=0
+  shopt -s nullglob
+  for d in "$PROJECTS"/*/; do
+    found=1
+    name=$(basename "$d")
+    if [[ -d "$d/.git" ]]; then
+      branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
+      dirty=$(git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      remote=$(git -C "$d" remote get-url origin 2>/dev/null || echo '(no remote)')
+      printf '  %-40s  %s  dirty=%s  %s\n' "$name" "$branch" "$dirty" "$remote"
+    else
+      printf '  %-40s  (not a git repo)\n' "$name"
+    fi
+  done
+  shopt -u nullglob
+  (( found == 0 )) && echo '  (none)'
+else
+  echo '  (no projects dir)'
+fi
+

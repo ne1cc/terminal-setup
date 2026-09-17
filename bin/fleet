@@ -1,0 +1,1461 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# fleet — Production Multi-Agent Git Worktree & Tmux Swarm Orchestrator
+# ==============================================================================
+# Parallelizes execution across multiple terminal AI agents (e.g. claude)
+# in isolated Git worktrees with deterministic ports, prompt broadcasting,
+# diff comparison matrices, winning branch promotion, and self-healing locks.
+# ==============================================================================
+
+set -euo pipefail
+
+# Robust PATH setup for macOS, Linux, Homebrew, NVM, and user paths
+export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+if [ -d "$HOME/.nvm/versions/node" ]; then
+    LATEST_NVM_NODE=$(ls -1d "$HOME/.nvm/versions/node"/v* 2>/dev/null | tail -n 1 || true)
+    if [ -n "$LATEST_NVM_NODE" ] && [ -d "$LATEST_NVM_NODE/bin" ]; then
+        export PATH="$LATEST_NVM_NODE/bin:$PATH"
+    fi
+fi
+
+VERSION="1.0.0"
+
+# ANSI Color & Style Formatting
+if [ -t 1 ]; then
+    BOLD="\033[1m"
+    DIM="\033[2m"
+    ITALIC="\033[3m"
+    UNDERLINE="\033[4m"
+    RED="\033[38;5;196m"
+    GREEN="\033[38;5;46m"
+    YELLOW="\033[38;5;220m"
+    BLUE="\033[38;5;39m"
+    MAGENTA="\033[38;5;201m"
+    CYAN="\033[38;5;51m"
+    WHITE="\033[38;5;231m"
+    GRAY="\033[38;5;245m"
+    BG_DARK="\033[48;5;236m"
+    RESET="\033[0m"
+else
+    BOLD=""
+    DIM=""
+    ITALIC=""
+    UNDERLINE=""
+    RED=""
+    GREEN=""
+    YELLOW=""
+    BLUE=""
+    MAGENTA=""
+    CYAN=""
+    WHITE=""
+    GRAY=""
+    BG_DARK=""
+    RESET=""
+fi
+
+# Log helper functions
+info()    { printf "${BLUE}${BOLD}[INFO]${RESET} %s\n" "$*"; }
+success() { printf "${GREEN}${BOLD}[SUCCESS]${RESET} %s\n" "$*"; }
+warn()    { printf "${YELLOW}${BOLD}[WARN]${RESET} %s\n" "$*" >&2; }
+error()   { printf "${RED}${BOLD}[ERROR]${RESET} %s\n" "$*" >&2; }
+step()    { printf "${CYAN}${BOLD}==>${RESET} ${BOLD}%s${RESET}\n" "$*"; }
+
+# ------------------------------------------------------------------------------
+# Git Helper (Bypasses external hooks for robust internal worktree management)
+# ------------------------------------------------------------------------------
+git_cmd() {
+    local root="$1"
+    shift
+    git -C "$root" -c core.hooksPath="" "$@"
+}
+
+# ------------------------------------------------------------------------------
+# Configuration Discovery & Loading
+# ------------------------------------------------------------------------------
+FLEET_CONFIG_FILE=""
+DEFAULT_AGENTS="claude"
+PORT_BASE=3100
+DEPS_STRATEGY="symlink"
+TMUX_LAYOUT="even-horizontal"
+AUTO_STASH="prompt"
+CLAUDE_CMD="claude"
+AGY_CMD="agy --dangerously-skip-permissions"
+QODER_CMD="qodercli"
+SECRETS_PATTERNS=".env* local.settings.json .npmrc .pypirc"
+AUTO_ATTACH="true"
+PROMPT_INJECT_DELAY_MS=1500
+
+load_config() {
+    local custom_cfg="${1:-}"
+    local search_paths=()
+
+    if [ -n "$custom_cfg" ]; then
+        search_paths+=("$custom_cfg")
+    fi
+
+    if [ -n "${FLEET_CONFIG:-}" ]; then
+        search_paths+=("$FLEET_CONFIG")
+    fi
+
+    # Check git repo root if inside one
+    local repo_top
+    repo_top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$repo_top" ]; then
+        search_paths+=(
+            "$repo_top/config/fleet.conf"
+            "$repo_top/.config/fleet/fleet.conf"
+        )
+    fi
+
+    # User-level config
+    search_paths+=(
+        "${XDG_CONFIG_HOME:-$HOME/.config}/fleet/fleet.conf"
+        "$HOME/.fleet.conf"
+    )
+
+    for cfg in "${search_paths[@]}"; do
+        if [ -f "$cfg" ]; then
+            FLEET_CONFIG_FILE="$cfg"
+            # shellcheck source=/dev/null
+            source "$cfg" 2>/dev/null || true
+            break
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Prerequisite & Environment Validation
+# ------------------------------------------------------------------------------
+check_repo_root() {
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        error "fleet must be run inside a Git repository."
+        exit 1
+    fi
+    local root
+    root=$(git rev-parse --show-toplevel 2>/dev/null)
+    echo "$root"
+}
+
+check_prereqs() {
+    local missing=()
+    if ! command -v git >/dev/null 2>&1; then missing+=("git"); fi
+    if ! command -v tmux >/dev/null 2>&1; then missing+=("tmux"); fi
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        error "Missing essential prerequisite binaries: ${missing[*]}"
+        exit 1
+    fi
+
+    # Detect Qoder executable alias if qodercli vs qoder
+    if ! command -v qodercli >/dev/null 2>&1 && command -v qoder >/dev/null 2>&1; then
+        QODER_CMD="qoder"
+    fi
+}
+
+resolve_agent_command() {
+    local agent="$1"
+    case "$agent" in
+        claude)
+            if command -v claude >/dev/null 2>&1; then
+                echo "$CLAUDE_CMD"
+            else
+                echo "echo 'Agent claude not found in PATH' && $SHELL"
+            fi
+            ;;
+        agy|agyy)
+            if command -v agy >/dev/null 2>&1; then
+                echo "$AGY_CMD"
+            else
+                echo "echo 'Agent agy not found in PATH' && $SHELL"
+            fi
+            ;;
+        qoder|qodercli)
+            if command -v qodercli >/dev/null 2>&1; then
+                echo "qodercli"
+            elif command -v qoder >/dev/null 2>&1; then
+                echo "qoder"
+            else
+                echo "echo 'Agent qoder/qodercli not found in PATH' && $SHELL"
+            fi
+            ;;
+        *)
+            echo "$agent"
+            ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Self-Healing & Lock Recovery Engine
+# ------------------------------------------------------------------------------
+heal_worktree_locks() {
+    local repo_root="$1"
+    local silent="${2:-false}"
+
+    if [ "$silent" != "true" ]; then
+        step "Checking Git worktree health and recovering locks..."
+    fi
+
+    # 1. Remove stale index.lock or worktree lockfiles if no active git process
+    local git_dir
+    git_dir=$(git_cmd "$repo_root" rev-parse --git-dir 2>/dev/null || echo "$repo_root/.git")
+
+    if [ -f "$git_dir/index.lock" ]; then
+        if ! pgrep -f "git " >/dev/null 2>&1; then
+            rm -f "$git_dir/index.lock"
+            [ "$silent" != "true" ] && warn "Removed stale $git_dir/index.lock"
+        fi
+    fi
+
+    # 2. Prune git worktree metadata for removed folders
+    git_cmd "$repo_root" worktree prune 2>/dev/null || true
+
+    # 3. Check for dangling worktree lock files in .git/worktrees/*
+    if [ -d "$git_dir/worktrees" ]; then
+        for wt_meta in "$git_dir/worktrees"/*; do
+            if [ -d "$wt_meta" ]; then
+                local gitdir_file="$wt_meta/gitdir"
+                if [ -f "$gitdir_file" ]; then
+                    local target_gitdir
+                    target_gitdir=$(cat "$gitdir_file" 2>/dev/null || true)
+                    local target_dir
+                    target_dir=$(dirname "$target_gitdir" 2>/dev/null || true)
+                    if [ -n "$target_dir" ] && [ ! -d "$target_dir" ]; then
+                        [ "$silent" != "true" ] && warn "Cleaning dangling worktree record: $(basename "$wt_meta")"
+                        rm -rf "$wt_meta"
+                    fi
+                fi
+                if [ -f "$wt_meta/locked" ]; then
+                    rm -f "$wt_meta/locked"
+                    [ "$silent" != "true" ] && warn "Unlocked stale worktree: $(basename "$wt_meta")"
+                fi
+            fi
+        done
+    fi
+
+    git_cmd "$repo_root" worktree prune 2>/dev/null || true
+    if [ "$silent" != "true" ]; then
+        success "Git worktree self-healing routine complete."
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Banner & Help
+# ------------------------------------------------------------------------------
+show_banner() {
+    cat << EOF
+${CYAN}${BOLD}
+  ███████╗██╗     ███████╗███████╗████████╗
+  ██╔════╝██║     ██╔════╝██╔════╝╚══██╔══╝
+  █████╗  ██║     █████╗  █████╗     ██║   
+  ██╔══╝  ██║     ██╔══╝  ██╔══╝     ██║   
+  ██║     ███████╗███████╗███████╗   ██║   
+  ╚═╝     ╚══════╝╚══════╝╚══════╝   ╚═╝   
+${RESET}${DIM}  Production Multi-Agent Git Worktree Swarm Orchestrator v${VERSION}${RESET}
+EOF
+}
+
+usage() {
+    show_banner
+    cat << EOF
+
+${BOLD}USAGE:${RESET}
+  fleet <command> [options]
+
+${BOLD}COMMANDS:${RESET}
+  ${CYAN}spawn${RESET} <run-id> [options]       Spawn parallel AI agents in isolated git worktrees & tmux
+  ${CYAN}broadcast${RESET} <run-id> "<prompt>"  Dispatch prompt instructions to all (or selected) agents
+  ${CYAN}diff${RESET} <run-id> [options]        Compare agent solutions with colored comparison matrix
+  ${CYAN}keep${RESET} <run-id> <agent> [opts]   Promote winning agent's branch (merge/rebase/PR) & teardown
+  ${CYAN}kill${RESET} <run-id> [options]        Gracefully terminate tmux session, prune worktrees & branches
+  ${CYAN}ls${RESET}                             List all active fleet runs, worktrees, ports & agent states
+  ${CYAN}attach${RESET} <run-id>                Attach or switch to an active fleet tmux session
+  ${CYAN}logs${RESET} <run-id> [agent]          Capture recent pane logs from an agent session
+  ${CYAN}doctor${RESET} [options]               Self-heal stale git locks, orphaned worktrees & dead sessions
+
+${BOLD}SPAWN OPTIONS:${RESET}
+  ${YELLOW}-p, --prompt${RESET} "<text>"          Initial prompt injected into all agent processes
+  ${YELLOW}-P, --prompt-file${RESET} <file>      Read initial prompt from a file
+  ${YELLOW}-b, --base${RESET} <branch>            Base branch to branch worktrees from (default: current HEAD)
+  ${YELLOW}-d, --deps${RESET} <mode>              Dependency isolation: symlink | install | none (default: symlink)
+  ${YELLOW}--stash${RESET}                        Auto-stash uncommitted changes before spawn and pop back
+  ${YELLOW}--snapshot${RESET}                     Create ephemeral snapshot commit for dirty working copy
+  ${YELLOW}--clean${RESET}                        Abort if uncommitted changes exist
+  ${YELLOW}--agents${RESET} <csv>                 Comma-separated agents to spawn (default: claude)
+  ${YELLOW}-l, --layout${RESET} <layout>          Tmux layout: even-horizontal | main-horizontal | tiled
+  ${YELLOW}--port-base${RESET} <port>             Base port for dev server offsets (default: 3100)
+  ${YELLOW}--no-attach${RESET}                    Do not automatically attach to tmux session after spawn
+  ${YELLOW}-y, --yes${RESET}                      Non-interactive mode (use defaults)
+
+${BOLD}BROADCAST OPTIONS:${RESET}
+  ${YELLOW}-a, --agents${RESET} <all|name|csv>    Target specific agent(s) (default: all)
+  ${YELLOW}-f, --file${RESET} <path>              Read prompt from file
+  ${YELLOW}--no-enter${RESET}                     Do not send Enter key after prompt
+
+${BOLD}DIFF OPTIONS:${RESET}
+  ${YELLOW}--stat${RESET}                         Show git diff --stat breakdown
+  ${YELLOW}--summary${RESET}                      Show commit logs for each agent
+  ${YELLOW}--agent${RESET} <name>                 Filter diff to a single agent
+  ${YELLOW}-p, --patch${RESET}                    Display full colored patch diff
+
+${BOLD}KEEP OPTIONS:${RESET}
+  ${YELLOW}--merge${RESET}                        Merge winning branch into the base branch
+  ${YELLOW}--rebase${RESET}                       Rebase and fast-forward winning branch into base branch
+  ${YELLOW}--pr${RESET}                           Push winning branch & create GitHub PR via 'gh pr create'
+  ${YELLOW}--keep-worktree${RESET}                Keep winner's worktree folder on disk
+  ${YELLOW}-f, --force${RESET}                    Force operations ignoring uncommitted changes in losing worktrees
+
+${BOLD}KILL OPTIONS:${RESET}
+  ${YELLOW}-f, --force${RESET}                    Force kill immediately without confirmation
+  ${YELLOW}--keep-branches${RESET}                Preserve git branches (delete worktrees and tmux only)
+
+${BOLD}EXAMPLES:${RESET}
+  ${DIM}# 1. Spawn 3 agents with initial task prompt${RESET}
+  fleet spawn auth-feature -p "Build OAuth2 login with Google and GitHub using NextAuth.js"
+
+  ${DIM}# 2. Broadcast clarification to all agents${RESET}
+  fleet broadcast auth-feature "Ensure JWT expiration is set to 24 hours"
+
+  ${DIM}# 3. Compare agent implementations in a scannable matrix${RESET}
+  fleet diff auth-feature --stat
+
+  ${DIM}# 4. Promote 'agy' as winner, merge into main, and tear down others${RESET}
+  fleet keep auth-feature claude --merge
+
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: spawn
+# ------------------------------------------------------------------------------
+cmd_spawn() {
+    local run_id=""
+    local prompt_text=""
+    local prompt_file=""
+    local base_branch=""
+    local deps_mode="$DEPS_STRATEGY"
+    local stash_flag=""
+    local agents_csv="$DEFAULT_AGENTS"
+    local layout="$TMUX_LAYOUT"
+    local port_base="$PORT_BASE"
+    local no_attach=false
+    local non_interactive=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -p|--prompt)
+                prompt_text="$2"; shift 2 ;;
+            -P|--prompt-file)
+                prompt_file="$2"; shift 2 ;;
+            -b|--base)
+                base_branch="$2"; shift 2 ;;
+            -d|--deps)
+                deps_mode="$2"; shift 2 ;;
+            --stash)
+                stash_flag="stash"; shift ;;
+            --snapshot)
+                stash_flag="snapshot"; shift ;;
+            --clean)
+                stash_flag="clean"; shift ;;
+            --agents)
+                agents_csv="$2"; shift 2 ;;
+            -l|--layout)
+                layout="$2"; shift 2 ;;
+            --port-base)
+                port_base="$2"; shift 2 ;;
+            --no-attach)
+                no_attach=true; shift ;;
+            -y|--yes)
+                non_interactive=true; shift ;;
+            -h|--help)
+                usage; exit 0 ;;
+            -*)
+                error "Unknown spawn option: $1"; exit 1 ;;
+            *)
+                if [ -z "$run_id" ]; then
+                    run_id="$1"
+                    shift
+                else
+                    error "Unexpected argument: $1"; exit 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$run_id" ]; then
+        if [ "$non_interactive" = "true" ]; then
+            run_id="run-$(date +%s)"
+        else
+            printf "${BOLD}Enter Run ID (e.g. feat-navbar, bugfix-auth): ${RESET}"
+            read -r run_id
+        fi
+    fi
+
+    # Sanitize run_id
+    run_id=$(echo "$run_id" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//')
+    if [ -z "$run_id" ]; then
+        error "Invalid Run ID provided."
+        exit 1
+    fi
+
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        prompt_text=$(cat "$prompt_file")
+    fi
+
+    local repo_root
+    repo_root=$(check_repo_root)
+    check_prereqs
+    heal_worktree_locks "$repo_root" true
+
+    local session_name="fleet-$run_id"
+
+    # Check if session already exists
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        error "Tmux session '$session_name' is already running."
+        echo "Run 'fleet attach $run_id' to resume, or 'fleet kill $run_id' to terminate."
+        exit 1
+    fi
+
+    # Detect current base branch
+    if [ -z "$base_branch" ]; then
+        base_branch=$(git_cmd "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+        if [ "$base_branch" = "HEAD" ]; then
+            base_branch=$(git_cmd "$repo_root" rev-parse --short HEAD 2>/dev/null)
+        fi
+    fi
+
+    step "Initializing Fleet run ${BOLD}${CYAN}$run_id${RESET} on base branch ${BOLD}${GREEN}$base_branch${RESET}"
+
+    # Handle Dirty Working Directory
+    local is_dirty
+    is_dirty=$(git_cmd "$repo_root" status --porcelain 2>/dev/null || true)
+    local snapshot_commit=""
+    local stashed_changes=false
+
+    if [ -n "$is_dirty" ]; then
+        warn "Working directory has uncommitted index or file changes."
+
+        if [ -z "$stash_flag" ]; then
+            if [ "$non_interactive" = "true" ]; then
+                if [ "$AUTO_STASH" = "prompt" ]; then
+                    stash_flag="snapshot"
+                else
+                    stash_flag="$AUTO_STASH"
+                fi
+            else
+                echo ""
+                printf "${BOLD}How would you like to handle uncommitted changes?${RESET}\n"
+                echo "  ${CYAN}[1] Snapshot Commit (--snapshot)${RESET}: Create ephemeral branch from uncommitted state without altering working copy."
+                echo "  ${CYAN}[2] Auto-Stash (--stash)${RESET}: Stash changes, create worktrees from clean HEAD, then restore stash on parent."
+                echo "  ${CYAN}[3] Abort (--clean)${RESET}: Stop execution."
+                printf "${BOLD}Select [1-3] (default: 1): ${RESET}"
+                read -r choice
+                case "$choice" in
+                    2|stash)    stash_flag="stash" ;;
+                    3|clean|abort) stash_flag="clean" ;;
+                    *)          stash_flag="snapshot" ;;
+                esac
+            fi
+        fi
+
+        case "$stash_flag" in
+            stash)
+                info "Auto-stashing current changes..."
+                git_cmd "$repo_root" stash push -u -m "fleet-auto-stash-$run_id" >/dev/null
+                stashed_changes=true
+                ;;
+            snapshot)
+                info "Creating ephemeral snapshot commit for agent worktrees..."
+                # git stash create creates a commit object without modifying worktree or reflog
+                snapshot_commit=$(git_cmd "$repo_root" stash create "fleet-snapshot-$run_id" || true)
+                if [ -n "$snapshot_commit" ]; then
+                    local snapshot_branch="fleet/snapshot/$run_id"
+                    git_cmd "$repo_root" branch -f "$snapshot_branch" "$snapshot_commit" >/dev/null
+                    base_branch="$snapshot_branch"
+                    info "Snapshot created at commit ${snapshot_commit:0:8} (${snapshot_branch})"
+                else
+                    info "Snapshot cleanly matches HEAD commit."
+                fi
+                ;;
+            clean)
+                error "Aborting due to dirty working copy."
+                exit 1
+                ;;
+            *)
+                error "Unknown dirty workspace handling mode: $stash_flag"
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Ensure .worktrees is gitignored
+    local gitignore_file="$repo_root/.gitignore"
+    if [ -f "$gitignore_file" ]; then
+        if ! grep -q "^\.worktrees/" "$gitignore_file" && ! grep -q "^/\.worktrees/" "$gitignore_file"; then
+            echo -e "\n# Fleet Multi-Agent Worktrees\n/.worktrees/\n.worktrees/" >> "$gitignore_file"
+            info "Added /.worktrees/ to .gitignore"
+        fi
+    else
+        echo -e "# Fleet Multi-Agent Worktrees\n/.worktrees/\n.worktrees/" > "$gitignore_file"
+        info "Created .gitignore with /.worktrees/"
+    fi
+
+    local worktrees_root="$repo_root/.worktrees/$run_id"
+    mkdir -p "$worktrees_root"
+
+    # Parse agents array
+    IFS=',' read -r -a agents <<< "$agents_csv"
+    if [ ${#agents[@]} -eq 0 ]; then
+        error "No agents specified to spawn."
+        exit 1
+    fi
+
+    local agent_worktrees=()
+    local agent_ports=()
+    local agent_cmds=()
+    local agent_branches=()
+
+    step "Creating isolated Git worktrees under .worktrees/$run_id/"
+
+    local index=0
+    for agent in "${agents[@]}"; do
+        agent=$(echo "$agent" | xargs) # trim whitespace
+        index=$((index + 1))
+        local port=$((port_base + index))
+        local branch="fleet/$run_id/$agent"
+        local wt_path="$worktrees_root/$agent"
+
+        agent_worktrees+=("$wt_path")
+        agent_ports+=("$port")
+        agent_branches+=("$branch")
+        local resolved_cmd
+        resolved_cmd=$(resolve_agent_command "$agent")
+        agent_cmds+=("$resolved_cmd")
+
+        printf "  ${CYAN}•${RESET} ${BOLD}%-10s${RESET} Branch: ${GREEN}%-28s${RESET} Port: ${YELLOW}%-5s${RESET}\n" \
+            "$agent" "$branch" "$port"
+
+        # If old worktree folder exists, remove it
+        if [ -d "$wt_path" ]; then
+            git_cmd "$repo_root" worktree remove --force "$wt_path" 2>/dev/null || rm -rf "$wt_path"
+        fi
+
+        # If old branch exists, recreate from base
+        if git_cmd "$repo_root" rev-parse --verify "$branch" >/dev/null 2>&1; then
+            git_cmd "$repo_root" worktree add -f -B "$branch" "$wt_path" "$base_branch" >/dev/null
+        else
+            git_cmd "$repo_root" worktree add -b "$branch" "$wt_path" "$base_branch" >/dev/null
+        fi
+
+        # Inject secrets & environment files
+        # shellcheck disable=SC2086
+        for pattern in $SECRETS_PATTERNS; do
+            for secret_file in "$repo_root"/$pattern; do
+                if [ -f "$secret_file" ]; then
+                    local base_name
+                    base_name=$(basename "$secret_file")
+                    cp "$secret_file" "$wt_path/$base_name" 2>/dev/null || true
+                fi
+            done
+        done
+
+        # Handle Dependency Isolation
+        case "$deps_mode" in
+            symlink)
+                # Node.js
+                if [ -d "$repo_root/node_modules" ] && [ ! -e "$wt_path/node_modules" ]; then
+                    ln -s "$repo_root/node_modules" "$wt_path/node_modules" 2>/dev/null || true
+                fi
+                # Python venv
+                if [ -d "$repo_root/.venv" ] && [ ! -e "$wt_path/.venv" ]; then
+                    ln -s "$repo_root/.venv" "$wt_path/.venv" 2>/dev/null || true
+                elif [ -d "$repo_root/venv" ] && [ ! -e "$wt_path/venv" ]; then
+                    ln -s "$repo_root/venv" "$wt_path/venv" 2>/dev/null || true
+                fi
+                # Ruby vendor
+                if [ -d "$repo_root/vendor" ] && [ ! -e "$wt_path/vendor" ]; then
+                    ln -s "$repo_root/vendor" "$wt_path/vendor" 2>/dev/null || true
+                fi
+                ;;
+            install)
+                info "Scheduled dependency installation for $agent..."
+                ;;
+            none)
+                # No dependency operations
+                ;;
+        esac
+    done
+
+    # If deps mode is install, run package managers concurrently
+    if [ "$deps_mode" = "install" ]; then
+        step "Running concurrent package managers across worktrees..."
+        local pids=()
+        for idx in "${!agent_worktrees[@]}"; do
+            local wt="${agent_worktrees[$idx]}"
+            local ag="${agents[$idx]}"
+            (
+                cd "$wt"
+                if [ -f "pnpm-lock.yaml" ] && command -v pnpm >/dev/null 2>&1; then
+                    pnpm install --silent >/dev/null 2>&1
+                elif [ -f "yarn.lock" ] && command -v yarn >/dev/null 2>&1; then
+                    yarn install --silent >/dev/null 2>&1
+                elif [ -f "bun.lockb" ] || [ -f "bun.lock" ] && command -v bun >/dev/null 2>&1; then
+                    bun install --silent >/dev/null 2>&1
+                elif [ -f "package.json" ] && command -v npm >/dev/null 2>&1; then
+                    npm install --silent >/dev/null 2>&1
+                fi
+                if [ -f "uv.lock" ] || [ -f "pyproject.toml" ] && command -v uv >/dev/null 2>&1; then
+                    uv sync --quiet >/dev/null 2>&1 || true
+                elif [ -f "poetry.lock" ] && command -v poetry >/dev/null 2>&1; then
+                    poetry install --quiet >/dev/null 2>&1 || true
+                fi
+            ) &
+            pids+=($!)
+        done
+        for pid in "${pids[@]}"; do
+            wait "$pid" 2>/dev/null || true
+        done
+        success "Dependencies installed in parallel."
+    fi
+
+    # If changes were auto-stashed, restore them on parent branch
+    if [ "$stashed_changes" = "true" ]; then
+        info "Restoring stashed changes on parent branch..."
+        git_cmd "$repo_root" stash pop >/dev/null 2>&1 || warn "Could not cleanly pop stash. Changes remain in 'git stash list'."
+    fi
+
+    # --------------------------------------------------------------------------
+    # Tmux Multiplexing Setup
+    # --------------------------------------------------------------------------
+    step "Provisioning Tmux session ${BOLD}${CYAN}$session_name${RESET} with layout ${BOLD}$layout${RESET}"
+
+    local first_wt="${agent_worktrees[0]}"
+    local first_agent="${agents[0]}"
+    local first_port="${agent_ports[0]}"
+    local first_cmd="${agent_cmds[0]}"
+
+    # Start new detached session
+    tmux new-session -d -s "$session_name" -n "fleet" -c "$first_wt"
+
+    # Configure session styles & title formats
+    tmux set-option -t "$session_name" pane-border-status top 2>/dev/null || true
+    tmux set-option -t "$session_name" pane-border-format " #[bold,fg=cyan]#{pane_title}#[default] " 2>/dev/null || true
+    tmux set-option -t "$session_name" mouse on 2>/dev/null || true
+
+    # Pane 1 title & environment
+    local pane_1_id
+    pane_1_id=$(tmux list-panes -t "$session_name" -F "#{pane_id}" | head -n 1)
+    tmux select-pane -t "$pane_1_id" -T "[1: $first_agent (PORT:$first_port)]"
+
+    # Export environment variables into Pane 1
+    tmux send-keys -t "$pane_1_id" "export PORT=$first_port VITE_PORT=$first_port NEXT_PORT=$first_port SERVER_PORT=$first_port UVICORN_PORT=$first_port FLASK_RUN_PORT=$first_port AGENT_NAME=$first_agent FLEET_RUN_ID=$run_id FLEET_WORKTREE='$first_wt' FLEET_BASE_BRANCH='$base_branch'" C-m
+    tmux send-keys -t "$pane_1_id" "cd '$first_wt' && clear" C-m
+
+    # Create additional panes for remaining agents
+    local pane_ids=("$pane_1_id")
+    for i in $(seq 1 $((${#agents[@]} - 1))); do
+        local ag="${agents[$i]}"
+        local wt="${agent_worktrees[$i]}"
+        local pt="${agent_ports[$i]}"
+        local new_pane_id
+        new_pane_id=$(tmux split-window -t "$session_name:1" -h -c "$wt" -P -F "#{pane_id}")
+        pane_ids+=("$new_pane_id")
+        tmux select-pane -t "$new_pane_id" -T "[$((i + 1)): $ag (PORT:$pt)]"
+        tmux send-keys -t "$new_pane_id" "export PORT=$pt VITE_PORT=$pt NEXT_PORT=$pt SERVER_PORT=$pt UVICORN_PORT=$pt FLASK_RUN_PORT=$pt AGENT_NAME=$ag FLEET_RUN_ID=$run_id FLEET_WORKTREE='$wt' FLEET_BASE_BRANCH='$base_branch'" C-m
+        tmux send-keys -t "$new_pane_id" "cd '$wt' && clear" C-m
+    done
+
+    # Apply layout geometry
+    tmux select-layout -t "$session_name:1" "$layout" 2>/dev/null || tmux select-layout -t "$session_name:1" even-horizontal
+
+    # Launch agent processes in each pane
+    for i in "${!agents[@]}"; do
+        local pid="${pane_ids[$i]}"
+        local cmd="${agent_cmds[$i]}"
+        tmux send-keys -t "$pid" "$cmd" C-m
+    done
+
+    # Prompt Dispatching if prompt provided
+    if [ -n "$prompt_text" ]; then
+        info "Waiting ${PROMPT_INJECT_DELAY_MS}ms for agent CLIs to initialize..."
+        sleep "$(echo "scale=3; $PROMPT_INJECT_DELAY_MS/1000" | bc -l 2>/dev/null || echo 1.5)"
+
+        step "Dispatching initial prompt to all agent panes..."
+        # Save prompt to temporary buffer and paste cleanly into each pane
+        tmux set-buffer -b "fleet_init_prompt" "$prompt_text"
+        for pid in "${pane_ids[@]}"; do
+            tmux paste-buffer -b "fleet_init_prompt" -t "$pid" -p 2>/dev/null || tmux send-keys -t "$pid" "$prompt_text"
+            tmux send-keys -t "$pid" C-m
+        done
+        tmux delete-buffer -b "fleet_init_prompt" 2>/dev/null || true
+        success "Prompt injected successfully."
+    fi
+
+    # Select pane 1
+    tmux select-pane -t "$pane_1_id"
+
+    # Save run metadata for fast inspection
+    local meta_file="$worktrees_root/.fleet_meta.json"
+    cat << EOF > "$meta_file"
+{
+  "run_id": "$run_id",
+  "base_branch": "$base_branch",
+  "created_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "repo_root": "$repo_root",
+  "tmux_session": "$session_name",
+  "agents": "$agents_csv",
+  "port_base": $port_base,
+  "deps_strategy": "$deps_mode"
+}
+EOF
+
+    echo ""
+    success "Fleet swarm ${BOLD}${CYAN}$run_id${RESET} is live and executing in parallel!"
+    echo "  ${BOLD}Tmux Session:${RESET} $session_name"
+    echo "  ${BOLD}Worktrees:${RESET}    $worktrees_root/"
+    echo "  ${BOLD}Dev Ports:${RESET}    ${agent_ports[*]}"
+    echo ""
+    echo "  ${DIM}Broadcast updates:${RESET}  fleet broadcast $run_id \"<prompt>\""
+    echo "  ${DIM}Inspect diffs:${RESET}      fleet diff $run_id"
+    echo "  ${DIM}Promote winner:${RESET}     fleet keep $run_id <winner> --merge"
+    echo ""
+
+    if [ "$no_attach" != "true" ] && [ "$AUTO_ATTACH" = "true" ]; then
+        if [ -n "${TMUX:-}" ]; then
+            tmux switch-client -t "$session_name"
+        else
+            tmux attach-session -t "$session_name"
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: broadcast
+# ------------------------------------------------------------------------------
+cmd_broadcast() {
+    local run_id=""
+    local prompt_text=""
+    local prompt_file=""
+    local target_agents="all"
+    local send_enter=true
+    local raw_mode=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -a|--agents)
+                target_agents="$2"; shift 2 ;;
+            -f|--file)
+                prompt_file="$2"; shift 2 ;;
+            --no-enter)
+                send_enter=false; shift ;;
+            -r|--raw)
+                raw_mode=true; shift ;;
+            -h|--help)
+                echo "Usage: fleet broadcast <run-id> \"<prompt>\" [-a all|agent1,agent2] [--file <path>]"; exit 0 ;;
+            -*)
+                error "Unknown broadcast option: $1"; exit 1 ;;
+            *)
+                if [ -z "$run_id" ]; then
+                    run_id="$1"
+                    shift
+                elif [ -z "$prompt_text" ]; then
+                    prompt_text="$1"
+                    shift
+                else
+                    prompt_text="$prompt_text $1"
+                    shift
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$run_id" ]; then
+        error "Missing <run-id>. Usage: fleet broadcast <run-id> \"<prompt>\""
+        exit 1
+    fi
+
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        prompt_text=$(cat "$prompt_file")
+    fi
+
+    if [ -z "$prompt_text" ]; then
+        if [ -t 0 ]; then
+            printf "${BOLD}Enter message to broadcast: ${RESET}"
+            read -r prompt_text
+        else
+            prompt_text=$(cat)
+        fi
+    fi
+
+    if [ -z "$prompt_text" ]; then
+        error "Cannot broadcast an empty prompt."
+        exit 1
+    fi
+
+    local session_name="fleet-$run_id"
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        error "Session '$session_name' not found."
+        exit 1
+    fi
+
+    step "Broadcasting message to session ${CYAN}$session_name${RESET} (Target: ${BOLD}$target_agents${RESET})"
+
+    local panes
+    panes=$(tmux list-panes -t "$session_name:1" -F "#{pane_id}:#{pane_title}")
+
+    local buffer_name="fleet_bc_${run_id}_$(date +%s)"
+    tmux set-buffer -b "$buffer_name" "$prompt_text"
+
+    local match_count=0
+    while IFS=':' read -r pid title; do
+        local should_send=false
+        if [ "$target_agents" = "all" ]; then
+            should_send=true
+        else
+            IFS=',' read -r -a targets <<< "$target_agents"
+            for tgt in "${targets[@]}"; do
+                tgt=$(echo "$tgt" | xargs)
+                if [[ "$title" =~ $tgt ]]; then
+                    should_send=true
+                    break
+                fi
+            done
+        fi
+
+        if [ "$should_send" = "true" ]; then
+            match_count=$((match_count + 1))
+            if [ "$raw_mode" = "true" ]; then
+                tmux send-keys -t "$pid" -l "$prompt_text"
+            else
+                tmux paste-buffer -b "$buffer_name" -t "$pid" -p 2>/dev/null || tmux send-keys -t "$pid" "$prompt_text"
+            fi
+            if [ "$send_enter" = "true" ]; then
+                tmux send-keys -t "$pid" C-m
+            fi
+            printf "  ${GREEN}✓${RESET} Dispatched to pane %s (%s)\n" "$pid" "$title"
+        fi
+    done <<< "$panes"
+
+    tmux delete-buffer -b "$buffer_name" 2>/dev/null || true
+
+    if [ "$match_count" -eq 0 ]; then
+        warn "No matching panes found for target: $target_agents"
+    else
+        success "Broadcast complete ($match_count panes updated)."
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: diff
+# ------------------------------------------------------------------------------
+cmd_diff() {
+    local run_id=""
+    local show_stat=false
+    local show_summary=false
+    local show_patch=false
+    local filter_agent=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --stat)
+                show_stat=true; shift ;;
+            --summary)
+                show_summary=true; shift ;;
+            -p|--patch)
+                show_patch=true; shift ;;
+            --agent)
+                filter_agent="$2"; shift 2 ;;
+            -h|--help)
+                echo "Usage: fleet diff <run-id> [--stat] [--summary] [--patch] [--agent <name>]"; exit 0 ;;
+            -*)
+                error "Unknown diff option: $1"; exit 1 ;;
+            *)
+                if [ -z "$run_id" ]; then
+                    run_id="$1"
+                    shift
+                else
+                    error "Unexpected argument: $1"; exit 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$run_id" ]; then
+        error "Missing <run-id>. Usage: fleet diff <run-id>"
+        exit 1
+    fi
+
+    local repo_root
+    repo_root=$(check_repo_root)
+
+    local meta_file="$repo_root/.worktrees/$run_id/.fleet_meta.json"
+    local base_branch="main"
+    local agents_csv="$DEFAULT_AGENTS"
+
+    if [ -f "$meta_file" ]; then
+        base_branch=$(grep '"base_branch"' "$meta_file" | head -n 1 | cut -d '"' -f 4 || echo "main")
+        agents_csv=$(grep '"agents"' "$meta_file" | head -n 1 | cut -d '"' -f 4 || echo "$DEFAULT_AGENTS")
+    else
+        # Inspect git branches
+        local found_branches
+        found_branches=$(git_cmd "$repo_root" branch --list "fleet/$run_id/*" | sed 's/[* ]//g' || true)
+        if [ -z "$found_branches" ]; then
+            error "No branches or worktrees found for run '$run_id'."
+            exit 1
+        fi
+    fi
+
+    IFS=',' read -r -a agents <<< "$agents_csv"
+
+    printf "\n${BOLD}${CYAN}=== FLEET DIFF MATRIX: %s (Base: %s) ===${RESET}\n\n" "$run_id" "$base_branch"
+
+    printf "${BOLD}%-12s %-28s %-10s %-12s %-16s %-8s${RESET}\n" \
+        "AGENT" "BRANCH" "COMMITS" "FILES CHG" "LINES (+/-)" "DEV PORT"
+    printf "${GRAY}──────────────────────────────────────────────────────────────────────────────────────────${RESET}\n"
+
+    local agent_index=0
+    for agent in "${agents[@]}"; do
+        agent=$(echo "$agent" | xargs)
+        agent_index=$((agent_index + 1))
+        local port=$((PORT_BASE + agent_index))
+        local branch="fleet/$run_id/$agent"
+
+        if [ -n "$filter_agent" ] && [ "$filter_agent" != "$agent" ]; then
+            continue
+        fi
+
+        if ! git_cmd "$repo_root" rev-parse --verify "$branch" >/dev/null 2>&1; then
+            printf "%-12s %-28s %-10s %-12s %-16s %-8s\n" \
+                "$agent" "$branch" "N/A" "N/A" "N/A" "$port"
+            continue
+        fi
+
+        local commit_count
+        commit_count=$(git_cmd "$repo_root" rev-list --count "$base_branch..$branch" 2>/dev/null || echo "0")
+
+        local diff_stat
+        diff_stat=$(git_cmd "$repo_root" diff --shortstat "$base_branch..$branch" 2>/dev/null || echo "")
+
+        local files_changed="0"
+        local insertions="0"
+        local deletions="0"
+
+        if [ -n "$diff_stat" ]; then
+            files_changed=$(echo "$diff_stat" | grep -o '[0-9]\+ file' | awk '{print $1}' || echo "0")
+            insertions=$(echo "$diff_stat" | grep -o '[0-9]\+ insertion' | awk '{print $1}' || echo "0")
+            deletions=$(echo "$diff_stat" | grep -o '[0-9]\+ deletion' | awk '{print $1}' || echo "0")
+        fi
+
+        local lines_str="${GREEN}+${insertions}${RESET} / ${RED}-${deletions}${RESET}"
+        local preview_url="http://localhost:$port"
+
+        printf "${BOLD}%-12s${RESET} ${CYAN}%-28s${RESET} %-10s %-12s %-25b ${YELLOW}%-8s${RESET}\n" \
+            "$agent" "$branch" "$commit_count ahead" "$files_changed files" "$lines_str" "$port"
+    done
+    printf "${GRAY}──────────────────────────────────────────────────────────────────────────────────────────${RESET}\n\n"
+
+    # Detailed stat breakdown
+    if [ "$show_stat" = "true" ] || [ "$show_summary" = "true" ] || [ "$show_patch" = "true" ]; then
+        for agent in "${agents[@]}"; do
+            agent=$(echo "$agent" | xargs)
+            local branch="fleet/$run_id/$agent"
+            if [ -n "$filter_agent" ] && [ "$filter_agent" != "$agent" ]; then
+                continue
+            fi
+            if ! git_cmd "$repo_root" rev-parse --verify "$branch" >/dev/null 2>&1; then
+                continue
+            fi
+
+            printf "%b\n" "${BOLD}${MAGENTA}--- [${agent}] Detailed Changes (${branch} vs ${base_branch}) ---${RESET}"
+
+            if [ "$show_summary" = "true" ]; then
+                echo "${BOLD}Commit History:${RESET}"
+                git_cmd "$repo_root" log --oneline --graph --decorate "$base_branch..$branch" || echo "No commits ahead."
+                echo ""
+            fi
+
+            if [ "$show_stat" = "true" ]; then
+                echo "${BOLD}Changed Files & Stat:${RESET}"
+                git_cmd "$repo_root" diff --stat "$base_branch..$branch" || true
+                echo ""
+            fi
+
+            if [ "$show_patch" = "true" ]; then
+                echo "${BOLD}Unified Patch Diff:${RESET}"
+                if command -v delta >/dev/null 2>&1; then
+                    git_cmd "$repo_root" diff "$base_branch..$branch" | delta --side-by-side || true
+                else
+                    git_cmd "$repo_root" diff --color "$base_branch..$branch" || true
+                fi
+                echo ""
+            fi
+        done
+    else
+        echo "Tip: Run 'fleet diff $run_id --stat' or 'fleet diff $run_id --patch' for detailed code inspects."
+        echo "Tip: Promote solution with 'fleet keep $run_id <winner> --merge'"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: keep
+# ------------------------------------------------------------------------------
+cmd_keep() {
+    local run_id=""
+    local winning_agent=""
+    local do_merge=false
+    local do_rebase=false
+    local do_pr=false
+    local delete_others=true
+    local keep_worktree=false
+    local force=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --merge)
+                do_merge=true; shift ;;
+            --rebase)
+                do_rebase=true; shift ;;
+            --pr)
+                do_pr=true; shift ;;
+            --delete-others)
+                delete_others=true; shift ;;
+            --keep-worktree)
+                keep_worktree=true; shift ;;
+            -f|--force)
+                force=true; shift ;;
+            -h|--help)
+                echo "Usage: fleet keep <run-id> <winning-agent> [--merge | --rebase | --pr] [--keep-worktree]"; exit 0 ;;
+            -*)
+                error "Unknown keep option: $1"; exit 1 ;;
+            *)
+                if [ -z "$run_id" ]; then
+                    run_id="$1"; shift
+                elif [ -z "$winning_agent" ]; then
+                    winning_agent="$1"; shift
+                else
+                    error "Unexpected argument: $1"; exit 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$run_id" ] || [ -z "$winning_agent" ]; then
+        error "Missing arguments. Usage: fleet keep <run-id> <winning-agent> [--merge|--rebase|--pr]"
+        exit 1
+    fi
+
+    local repo_root
+    repo_root=$(check_repo_root)
+
+    local winning_branch="fleet/$run_id/$winning_agent"
+    if ! git_cmd "$repo_root" rev-parse --verify "$winning_branch" >/dev/null 2>&1; then
+        error "Winning branch '$winning_branch' does not exist."
+        exit 1
+    fi
+
+    local meta_file="$repo_root/.worktrees/$run_id/.fleet_meta.json"
+    local base_branch="main"
+    local agents_csv="$DEFAULT_AGENTS"
+
+    if [ -f "$meta_file" ]; then
+        base_branch=$(grep '"base_branch"' "$meta_file" | head -n 1 | cut -d '"' -f 4 || echo "main")
+        agents_csv=$(grep '"agents"' "$meta_file" | head -n 1 | cut -d '"' -f 4 || echo "$DEFAULT_AGENTS")
+    fi
+
+    step "Promoting solution from agent ${BOLD}${GREEN}$winning_agent${RESET} (Branch: ${CYAN}$winning_branch${RESET})"
+
+    # Handle Promotion Operations
+    if [ "$do_merge" = "true" ]; then
+        step "Merging $winning_branch into base branch $base_branch..."
+        local curr_branch
+        curr_branch=$(git_cmd "$repo_root" rev-parse --abbrev-ref HEAD)
+        if [ "$curr_branch" != "$base_branch" ]; then
+            git_cmd "$repo_root" checkout "$base_branch"
+        fi
+        git_cmd "$repo_root" merge --no-ff "$winning_branch" -m "feat(fleet): integrate winning solution from $winning_agent ($run_id)"
+        success "Merged $winning_branch into $base_branch."
+    elif [ "$do_rebase" = "true" ]; then
+        step "Rebasing $winning_branch onto $base_branch..."
+        git_cmd "$repo_root" checkout "$base_branch"
+        git_cmd "$repo_root" merge --ff-only "$winning_branch" || git_cmd "$repo_root" merge "$winning_branch"
+        success "Fast-forward merged $winning_branch into $base_branch."
+    elif [ "$do_pr" = "true" ]; then
+        step "Pushing branch $winning_branch and creating Pull Request via gh CLI..."
+        if command -v gh >/dev/null 2>&1; then
+            git_cmd "$repo_root" push -u origin "$winning_branch" 2>/dev/null || warn "Could not push to remote origin."
+            gh pr create --head "$winning_branch" --base "$base_branch" \
+                --title "feat(fleet): $run_id solution by $winning_agent" \
+                --body "Automated parallel agent swarm winner: **$winning_agent** for run \`$run_id\`." || true
+            success "Created Pull Request for $winning_branch."
+        else
+            error "GitHub CLI 'gh' is not installed. Please create PR manually for branch $winning_branch."
+        fi
+    else
+        info "Branch $winning_branch promoted. (Use --merge or --pr to automatically integrate)."
+    fi
+
+    # Teardown losing worktrees and session
+    if [ "$delete_others" = "true" ]; then
+        step "Tearing down other agent worktrees and pruning resources..."
+        local session_name="fleet-$run_id"
+        if tmux has-session -t "$session_name" 2>/dev/null; then
+            tmux kill-session -t "$session_name" 2>/dev/null || true
+            info "Terminated Tmux session $session_name."
+        fi
+
+        IFS=',' read -r -a all_agents <<< "$agents_csv"
+        for ag in "${all_agents[@]}"; do
+            ag=$(echo "$ag" | xargs)
+            local wt_path="$repo_root/.worktrees/$run_id/$ag"
+            local br_name="fleet/$run_id/$ag"
+
+            if [ "$ag" = "$winning_agent" ] && [ "$keep_worktree" = "true" ]; then
+                info "Retaining winner worktree: $wt_path"
+                continue
+            fi
+
+            if [ -d "$wt_path" ]; then
+                git_cmd "$repo_root" worktree remove --force "$wt_path" 2>/dev/null || rm -rf "$wt_path"
+            fi
+
+            if [ "$ag" != "$winning_agent" ]; then
+                git_cmd "$repo_root" branch -D "$br_name" 2>/dev/null || true
+                info "Removed non-winning branch $br_name"
+            fi
+        done
+
+        heal_worktree_locks "$repo_root" true
+
+        if [ "$keep_worktree" != "true" ]; then
+            rm -rf "$repo_root/.worktrees/$run_id"
+        fi
+    fi
+
+    success "Fleet run ${BOLD}${CYAN}$run_id${RESET} completed! Winner: ${BOLD}${GREEN}$winning_agent${RESET}."
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: kill
+# ------------------------------------------------------------------------------
+cmd_kill() {
+    local run_id=""
+    local force=false
+    local keep_branches=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|--force)
+                force=true; shift ;;
+            --keep-branches)
+                keep_branches=true; shift ;;
+            -h|--help)
+                echo "Usage: fleet kill <run-id> [-f|--force] [--keep-branches]"; exit 0 ;;
+            -*)
+                error "Unknown kill option: $1"; exit 1 ;;
+            *)
+                if [ -z "$run_id" ]; then
+                    run_id="$1"; shift
+                else
+                    error "Unexpected argument: $1"; exit 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$run_id" ]; then
+        error "Missing <run-id>. Usage: fleet kill <run-id>"
+        exit 1
+    fi
+
+    local repo_root
+    repo_root=$(check_repo_root)
+
+    step "Terminating Fleet run ${BOLD}${CYAN}$run_id${RESET}..."
+
+    # Gracefully send SIGINT to panes, then kill tmux session
+    local session_name="fleet-$run_id"
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        local pane_list
+        pane_list=$(tmux list-panes -t "$session_name:1" -F "#{pane_id}" 2>/dev/null || true)
+        for pid in $pane_list; do
+            tmux send-keys -t "$pid" C-c 2>/dev/null || true
+        done
+        sleep 0.4
+        tmux kill-session -t "$session_name" 2>/dev/null || true
+        info "Killed Tmux session $session_name."
+    fi
+
+    # Remove worktrees
+    local wt_root="$repo_root/.worktrees/$run_id"
+    if [ -d "$wt_root" ]; then
+        for wt in "$wt_root"/*; do
+            if [ -d "$wt" ]; then
+                git_cmd "$repo_root" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+            fi
+        done
+        rm -rf "$wt_root"
+        info "Cleaned up worktree directory $wt_root"
+    fi
+
+    # Prune worktree records
+    heal_worktree_locks "$repo_root" true
+
+    # Delete branches if requested
+    if [ "$keep_branches" != "true" ]; then
+        local branches
+        branches=$(git_cmd "$repo_root" branch --list "fleet/$run_id/*" | sed 's/[* ]//g' || true)
+        for br in $branches; do
+            git_cmd "$repo_root" branch -D "$br" 2>/dev/null || true
+            info "Deleted branch $br"
+        done
+        # Also delete snapshot branch if exists
+        git_cmd "$repo_root" branch -D "fleet/snapshot/$run_id" 2>/dev/null || true
+    else
+        info "Retained git branches matching fleet/$run_id/*"
+    fi
+
+    success "Fleet run '$run_id' completely torn down."
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: ls
+# ------------------------------------------------------------------------------
+cmd_ls() {
+    local repo_root
+    repo_root=$(check_repo_root)
+
+    printf "\n${BOLD}${CYAN}=== ACTIVE FLEET RUNS & SWARMS ===${RESET}\n\n"
+
+    # Scan tmux sessions
+    local active_sessions
+    active_sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep '^fleet-' || true)
+
+    # Scan .worktrees directories
+    local wt_runs=()
+    if [ -d "$repo_root/.worktrees" ]; then
+        for rdir in "$repo_root/.worktrees"/*; do
+            if [ -d "$rdir" ]; then
+                wt_runs+=("$(basename "$rdir")")
+            fi
+        done
+    fi
+
+    # Combine unique run-ids
+    local all_runs=()
+    for s in $active_sessions; do
+        local rid="${s#fleet-}"
+        all_runs+=("$rid")
+    done
+    for w in "${wt_runs[@]}"; do
+        all_runs+=("$w")
+    done
+
+    # Deduplicate
+    local unique_runs=()
+    if [ ${#all_runs[@]} -gt 0 ]; then
+        readarray -t unique_runs < <(printf '%s\n' "${all_runs[@]}" | sort -u)
+    fi
+
+    if [ ${#unique_runs[@]} -eq 0 ]; then
+        echo "${DIM}No active fleet runs or worktrees detected in $repo_root.${RESET}"
+        echo "Spawn a new swarm using: fleet spawn <run-id> -p \"<prompt>\""
+        echo ""
+        return 0
+    fi
+
+    printf "${BOLD}%-16s %-14s %-24s %-12s %-12s %-10s${RESET}\n" \
+        "RUN ID" "TMUX SESSION" "AGENTS" "BASE BRANCH" "DISK USAGE" "STATUS"
+    printf "${GRAY}──────────────────────────────────────────────────────────────────────────────────────────${RESET}\n"
+
+    for rid in "${unique_runs[@]}"; do
+        local sess="fleet-$rid"
+        local sess_status="${RED}Detached/Dead${RESET}"
+        if tmux has-session -t "$sess" 2>/dev/null; then
+            sess_status="${GREEN}Live (Active)${RESET}"
+        fi
+
+        local meta_file="$repo_root/.worktrees/$rid/.fleet_meta.json"
+        local base_branch="—"
+        local agents="claude"
+        local disk_usage="—"
+
+        if [ -f "$meta_file" ]; then
+            base_branch=$(grep '"base_branch"' "$meta_file" | head -n 1 | cut -d '"' -f 4 || echo "—")
+            agents=$(grep '"agents"' "$meta_file" | head -n 1 | cut -d '"' -f 4 || echo "—")
+        fi
+
+        if [ -d "$repo_root/.worktrees/$rid" ]; then
+            disk_usage=$(du -sh "$repo_root/.worktrees/$rid" 2>/dev/null | awk '{print $1}' || echo "—")
+        fi
+
+        printf "${BOLD}%-16s${RESET} %-14s %-24s %-12s %-12s %-20b\n" \
+            "$rid" "$sess" "$agents" "$base_branch" "$disk_usage" "$sess_status"
+    done
+    printf "${GRAY}──────────────────────────────────────────────────────────────────────────────────────────${RESET}\n\n"
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: attach
+# ------------------------------------------------------------------------------
+cmd_attach() {
+    local run_id="${1:-}"
+    if [ -z "$run_id" ]; then
+        # Pick first active session
+        local first_sess
+        first_sess=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep '^fleet-' | head -n 1 || true)
+        if [ -n "$first_sess" ]; then
+            run_id="${first_sess#fleet-}"
+        else
+            error "No active fleet sessions found. Specify <run-id> to attach."
+            exit 1
+        fi
+    fi
+
+    local session_name="fleet-$run_id"
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        error "Tmux session '$session_name' not found."
+        exit 1
+    fi
+
+    if [ -n "${TMUX:-}" ]; then
+        tmux switch-client -t "$session_name"
+    else
+        tmux attach-session -t "$session_name"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: logs
+# ------------------------------------------------------------------------------
+cmd_logs() {
+    local run_id="${1:-}"
+    local target_agent="${2:-}"
+    local lines="${3:-50}"
+
+    if [ -z "$run_id" ]; then
+        error "Missing <run-id>. Usage: fleet logs <run-id> [agent] [lines]"
+        exit 1
+    fi
+
+    local session_name="fleet-$run_id"
+    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+        error "Tmux session '$session_name' not found."
+        exit 1
+    fi
+
+    local panes
+    panes=$(tmux list-panes -t "$session_name:1" -F "#{pane_id}:#{pane_title}")
+
+    while IFS=':' read -r pid title; do
+        if [ -n "$target_agent" ] && [[ ! "$title" =~ $target_agent ]]; then
+            continue
+        fi
+
+        printf "\n${BOLD}${CYAN}=== Pane Log: %s (%s) ===${RESET}\n" "$pid" "$title"
+        tmux capture-pane -p -t "$pid" -S -"$lines" || true
+    done <<< "$panes"
+}
+
+# ------------------------------------------------------------------------------
+# COMMAND: doctor / heal
+# ------------------------------------------------------------------------------
+cmd_doctor() {
+    local repo_root
+    repo_root=$(check_repo_root)
+
+    show_banner
+    printf "\n${BOLD}${CYAN}=== FLEET DOCTOR & SELF-HEALING DIAGNOSTICS ===${RESET}\n\n"
+
+    step "1. Checking System Executables..."
+    local tools=("git" "tmux" "claude" "agy" "qodercli" "qoder" "gh" "delta" "fzf")
+    for t in "${tools[@]}"; do
+        if command -v "$t" >/dev/null 2>&1; then
+            local path
+            path=$(command -v "$t")
+            printf "  ${GREEN}✓${RESET} %-10s : %s\n" "$t" "$path"
+        else
+            if [ "$t" = "agy" ] || [ "$t" = "qoder" ] || [ "$t" = "qodercli" ] || [ "$t" = "delta" ] || [ "$t" = "fzf" ]; then
+                printf "  ${YELLOW}○${RESET} %-10s : ${DIM}Not in PATH (optional/alternative)${RESET}\n" "$t"
+            else
+                printf "  ${RED}✗${RESET} %-10s : ${RED}Missing from PATH${RESET}\n" "$t"
+            fi
+        fi
+    done
+
+    echo ""
+    step "2. Checking Git Worktree Health & Recovering Locks..."
+    heal_worktree_locks "$repo_root" false
+
+    echo ""
+    step "3. Checking Active Fleet Sessions..."
+    local active_sessions
+    active_sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep '^fleet-' || true)
+    if [ -n "$active_sessions" ]; then
+        for s in $active_sessions; do
+            printf "  ${GREEN}✓${RESET} Tmux session active: %s\n" "$s"
+        done
+    else
+        printf "  ${DIM}No active tmux fleet sessions.${RESET}\n"
+    fi
+
+    echo ""
+    success "Doctor check and self-healing completed."
+}
+
+# ------------------------------------------------------------------------------
+# Main Dispatcher
+# ------------------------------------------------------------------------------
+main() {
+    load_config "${FLEET_CONFIG_PATH:-}"
+
+    if [ $# -eq 0 ]; then
+        usage
+        exit 0
+    fi
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        spawn)
+            cmd_spawn "$@"
+            ;;
+        broadcast|bc)
+            cmd_broadcast "$@"
+            ;;
+        diff|df)
+            cmd_diff "$@"
+            ;;
+        keep|kp)
+            cmd_keep "$@"
+            ;;
+        kill|kl)
+            cmd_kill "$@"
+            ;;
+        ls|list)
+            cmd_ls "$@"
+            ;;
+        attach|at)
+            cmd_attach "$@"
+            ;;
+        logs|log)
+            cmd_logs "$@"
+            ;;
+        doctor|heal)
+            cmd_doctor "$@"
+            ;;
+        version|-v|--version)
+            echo "fleet version $VERSION"
+            ;;
+        help|-h|--help)
+            usage
+            ;;
+        *)
+            error "Unknown command: $command"
+            echo "Run 'fleet help' for available commands."
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

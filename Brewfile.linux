@@ -1,0 +1,32 @@
+# ==============================================================================
+# Brewfile.linux — Linuxbrew CLI tools (no casks, no macOS-only taps)
+# Run: brew bundle --file=Brewfile.linux
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# CLI / Dev Tools
+# ------------------------------------------------------------------------------
+brew "cmake"
+brew "ffmpeg"
+brew "fnm"               # fast Node.js version manager
+brew "gallery-dl"
+brew "gh"
+brew "git"
+brew "git-delta"
+brew "glow"              # markdown renderer
+brew "gnupg"
+brew "htop"
+brew "neovim"
+brew "ninja"
+brew "pipx"
+brew "ripgrep"
+brew "rustup"
+brew "stow"
+brew "tmux"
+brew "uv"               # fast Python package manager
+brew "zoxide"
+brew "fzf"
+brew "eza"
+brew "bat"
+brew "fd"
+brew "direnv"

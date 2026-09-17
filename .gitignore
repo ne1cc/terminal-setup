@@ -1,0 +1,22 @@
+# macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Neovim temp / cache files
+.config/nvim/.repro/
+.config/nvim/.netrwhist
+.config/nvim/lazy-lock.json.bak
+*.swp
+*.swo
+*~
+
+# Generated configs (written by setup.sh from templates)
+.taskrc
+
+# Backup files
+*.backup_*

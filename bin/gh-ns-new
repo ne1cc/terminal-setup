@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# gh-ns-new — create a local-only project under ~/Github/_local/projects/<name>
+# Promote later with: gh-ns-promote
+set -euo pipefail
+
+GITHUB_ROOT="${GITHUB_ROOT:-$HOME/Github}"
+OWNER="${GH_NS_OWNER:-$(gh api user -q .login 2>/dev/null || true)}"
+[[ -n "$OWNER" ]] || { echo "error: set GH_NS_OWNER or run: gh auth login" >&2; exit 1; }
+PROJECTS="${GITHUB_ROOT}/_local/projects"
+
+usage() {
+  cat <<'USAGE'
+Usage: gh-ns-new <name> [--python|--node|--empty]
+
+Creates ~/Github/_local/projects/<name> as a git repo (no GitHub remote yet).
+USAGE
+}
+
+if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
+  usage; exit 0
+fi
+
+name="$1"; shift
+kind="empty"
+case "${1:-}" in
+  --python) kind=python; shift || true ;;
+  --node) kind=node; shift || true ;;
+  --empty|"") ;;
+  *) echo "unknown option: $1" >&2; exit 2 ;;
+esac
+
+# sanitize name
+if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: name must be alphanumeric / ._- only" >&2
+  exit 2
+fi
+
+dest="$PROJECTS/$name"
+if [[ -e "$dest" ]]; then
+  echo "error: already exists: $dest" >&2
+  exit 1
+fi
+
+mkdir -p "$dest"
+cd "$dest"
+git init -b main >/dev/null
+
+case "$kind" in
+  python)
+    printf '%s\n' '.venv/' '__pycache__/' '*.pyc' '.pytest_cache/' '.ruff_cache/' 'dist/' '*.egg-info/' > .gitignore
+    printf '# %s\n\nLocal project (not on GitHub yet). Promote with `gh-ns-promote`.\n' "$name" > README.md
+    ;;
+  node)
+    printf '%s\n' 'node_modules/' 'dist/' 'build/' '.env' '.env.*' '!.env.example' > .gitignore
+    printf '# %s\n\nLocal project (not on GitHub yet). Promote with `gh-ns-promote`.\n' "$name" > README.md
+    ;;
+  empty)
+    printf '%s\n' '.DS_Store' '.env' '.env.*' '!.env.example' > .gitignore
+    printf '# %s\n\nLocal project (not on GitHub yet). Promote with `gh-ns-promote`.\n' "$name" > README.md
+    ;;
+esac
+
+git add -A
+git commit -m "chore: initial local project" >/dev/null
+
+echo "Created local project: $dest"
+echo "Owner target when promoting: $OWNER"
+echo "Next: cd \"$dest\" && ...work... && gh-ns-promote"

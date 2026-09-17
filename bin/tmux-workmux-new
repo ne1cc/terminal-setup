@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# tmux-workmux-new — interactive modal launcher for workmux worktrees
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/bin:$HOME/.local/bin:$PATH"
+
+# Resolve active pane directory if launched inside tmux
+if [[ -n "${TMUX_PANE:-}" ]]; then
+  TARGET_DIR=$(tmux display-message -p -t "$TMUX_PANE" "#{pane_current_path}" 2>/dev/null || true)
+  if [[ -n "${TARGET_DIR:-}" && -d "$TARGET_DIR" ]]; then
+    cd "$TARGET_DIR"
+  fi
+fi
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Error: Must be inside a git repository."
+  echo "Current directory: $(pwd)"
+  read -n 1 -s -r -p "Press any key to exit..."
+  exit 1
+fi
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " 🚀 LAUNCH NEW WORKTREE (workmux)"
+echo " Repo: $(basename "$REPO_ROOT")"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+printf "Enter new branch name (e.g. feat/auth, fix/styles):\n> "
+read -r branch
+
+if [[ -z "${branch:-}" ]]; then
+  echo "Branch name cannot be empty."
+  exit 0
+fi
+
+# Sanitize branch name (spaces to hyphens)
+branch="${branch// /-}"
+
+echo ""
+echo "==> Creating worktree '$branch' with Neovim + clean terminal..."
+if ! workmux add "$branch"; then
+  echo ""
+  echo "Failed to create worktree. Press any key to close..."
+  read -n 1 -s -r
+  exit 1
+fi

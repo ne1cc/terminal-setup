@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Break a tmux pane into a new session and open it in a new Ghostty window.
+# macOS Ghostty ignores -e when launched via `open`; pass --command= to override the
+# default `command = tmux new-session -A -s main` from ghostty config.
+#
+# Usage: tmux-breakout-ghostty [pane_id]
+# pane_id defaults to TMUX_PANE (unset when invoked via run-shell -b — pass #{pane_id}).
+
+set -euo pipefail
+
+pane_id="${1:-${TMUX_PANE:-}}"
+
+if [[ -z "$pane_id" ]]; then
+    tmux display-message "tmux-breakout-ghostty: no pane id (pass #{pane_id} from binding)"
+    exit 1
+fi
+
+tmux_bin=$(command -v tmux)
+
+if ! "$tmux_bin" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -Fxq "$pane_id"; then
+    tmux display-message "tmux-breakout-ghostty: pane $pane_id not found"
+    exit 1
+fi
+
+window=$("$tmux_bin" break-pane -d -s "$pane_id" -P -F "#{window_id}")
+session="breakout-${pane_id#%}-$(date +%s)"
+
+"$tmux_bin" new-session -d -s "$session"
+"$tmux_bin" move-window -k -s "$window" -t "$session":
+"$tmux_bin" display-message "✓ Pane → session '$session' (opening Ghostty)"
+
+attach_cmd="${tmux_bin} attach-session -t ${session}"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    ghostty_bin="/Applications/Ghostty.app/Contents/MacOS/ghostty"
+    if [[ -x "$ghostty_bin" ]]; then
+        "$ghostty_bin" -e bash -lc "$attach_cmd" >/dev/null 2>&1 &
+    else
+        open -na Ghostty --args "--command=${attach_cmd}"
+    fi
+elif command -v ghostty >/dev/null 2>&1; then
+    ghostty -e bash -lc "$attach_cmd" &
+else
+    "$tmux_bin" display-message "Ghostty not found — session '$session' created; attach manually"
+    exit 1
+fi

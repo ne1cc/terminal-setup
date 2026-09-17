@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# gh-ns-clone — clone owner/repo into ~/Github/<owner>/<repo> (namespace pattern)
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: gh-ns-clone <owner>/<repo> [gh repo clone args...]" >&2
+  exit 2
+fi
+
+spec="$1"; shift
+owner="${spec%%/*}"
+repo="${spec#*/}"
+if [[ -z "$owner" || -z "$repo" || "$owner" == "$spec" ]]; then
+  echo "error: expected owner/repo, got '$spec'" >&2
+  exit 2
+fi
+
+dest="${GITHUB_ROOT:-$HOME/Github}/$owner/$repo"
+if [[ -d "$dest/.git" ]]; then
+  echo "already cloned: $dest"
+  exit 0
+fi
+
+mkdir -p "$(dirname "$dest")"
+echo "Cloning $spec → $dest"
+exec gh repo clone "$spec" "$dest" "$@"

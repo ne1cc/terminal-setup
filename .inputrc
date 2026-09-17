@@ -1,0 +1,4 @@
+# GNU Readline Configuration (~/.inputrc)
+# Map Alt+k to clear from cursor to end of line
+"\ek": kill-line
+"^[k": kill-line
