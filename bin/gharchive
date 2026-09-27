@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Move a local project folder into ~/Github/archive/ with a dated path + manifest entry.
+#
+# Usage:
+#   gharchive <name>              # search explore/, workspace/, ne1cc/
+#   gharchive /full/path/to/dir   # explicit path
+#   gharchive --list              # show archived projects
+#   gharchive --from-ne1cc <name> # archive from ne1cc/ (sync-ne1cc skips unless excluded)
+
+set -euo pipefail
+
+GITHUB_ROOT="${GITHUB_ROOT:-$HOME/Github}"
+ARCHIVE_DIR="$GITHUB_ROOT/archive"
+MANIFEST="$ARCHIVE_DIR/MANIFEST.md"
+EXCLUDE_FILE="$GITHUB_ROOT/_tools/archive-exclude.txt"
+DATE_PREFIX="$(date +%Y-%m-%d)"
+
+usage() {
+  sed -n '2,8p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
+init_manifest() {
+  if [[ ! -f "$MANIFEST" ]]; then
+    cat > "$MANIFEST" << 'EOF'
+# Archive manifest
+
+Local cold storage. Archived folders are not deleted from GitHub unless you do that separately.
+
+| Archived | Original location | Notes |
+|----------|-------------------|-------|
+EOF
+  fi
+}
+
+find_project() {
+  local name="$1"
+  local candidates=()
+
+  if [[ -d "$name" ]]; then
+    echo "$(cd "$name" && pwd)"
+    return 0
+  fi
+
+  for root in "$GITHUB_ROOT/explore" "$GITHUB_ROOT/workspace" "$GITHUB_ROOT/ne1cc" "$GITHUB_ROOT/n1ecC"; do
+    [[ -d "$root/$name" ]] && candidates+=("$root/$name")
+  done
+
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    echo "ERROR: Could not find '$name' in explore/, workspace/, or ne1cc/" >&2
+    return 1
+  fi
+
+  if [[ ${#candidates[@]} -gt 1 ]]; then
+    echo "ERROR: Multiple matches for '$name':" >&2
+    printf '  %s\n' "${candidates[@]}" >&2
+    return 1
+  fi
+
+  echo "${candidates[0]}"
+}
+
+git_summary() {
+  local dir="$1"
+  if [[ -d "$dir/.git" ]]; then
+    git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' '
+  else
+    echo "0"
+  fi
+}
+
+append_exclude() {
+  local name="$1"
+  mkdir -p "$(dirname "$EXCLUDE_FILE")"
+  touch "$EXCLUDE_FILE"
+  if ! grep -qxF "$name" "$EXCLUDE_FILE" 2>/dev/null; then
+    echo "$name" >> "$EXCLUDE_FILE"
+    echo "Added '$name' to archive-exclude.txt (sync-ne1cc will skip re-cloning)."
+  fi
+}
+
+archive_path() {
+  local src="$1"
+  local base
+  base="$(basename "$src")"
+  local dest="$ARCHIVE_DIR/${DATE_PREFIX}_${base}"
+  local n=1
+  while [[ -e "$dest" ]]; do
+    dest="$ARCHIVE_DIR/${DATE_PREFIX}_${base}_$n"
+    ((n++))
+  done
+  echo "$dest"
+}
+
+list_archived() {
+  echo "Archived projects in $ARCHIVE_DIR:"
+  echo ""
+  if [[ -f "$MANIFEST" ]]; then
+    tail -n +8 "$MANIFEST"
+  else
+    ls -1 "$ARCHIVE_DIR" 2>/dev/null | grep -v '^MANIFEST' || echo "(empty)"
+  fi
+}
+
+do_archive() {
+  local src="$1"
+  local from_ne1cc="${2:-false}"
+  local name notes dest dirty
+
+  src="$(cd "$src" && pwd)"
+  name="$(basename "$src")"
+  dest="$(archive_path "$src")"
+
+  if [[ "$src" == "$ARCHIVE_DIR"* ]]; then
+    echo "Already archived: $src"
+    exit 0
+  fi
+
+  if [[ "$src" == "$GITHUB_ROOT/ne1cc/"* || "$src" == "$GITHUB_ROOT/n1ecC/"* ]]; then
+    if [[ "$from_ne1cc" != "true" ]]; then
+      echo "ERROR: '$name' is in ne1cc/ (your GitHub mirror)." >&2
+      echo "Re-run with --from-ne1cc to archive locally." >&2
+      exit 1
+    fi
+    append_exclude "$name"
+    notes="archived from ne1cc; excluded from sync-ne1cc"
+  elif [[ "$src" == "$GITHUB_ROOT/explore/"* ]]; then
+    notes="archived from explore"
+  elif [[ "$src" == "$GITHUB_ROOT/workspace/"* ]]; then
+    notes="archived from workspace"
+  else
+    notes="archived from external path"
+  fi
+
+  dirty="$(git_summary "$src")"
+  if [[ "$dirty" != "0" ]]; then
+    echo "WARN: $name has $dirty uncommitted change(s). Archiving anyway."
+  fi
+
+  mkdir -p "$ARCHIVE_DIR"
+  mv "$src" "$dest"
+  init_manifest
+  echo "| $DATE_PREFIX | \`$src\` -> \`${dest#$GITHUB_ROOT/}\` | $notes |" >> "$MANIFEST"
+
+  echo "Archived:"
+  echo "  from: $src"
+  echo "  to:   $dest"
+  if [[ -d "$dest/.git" ]]; then
+    echo "  git:  history preserved (.git intact)"
+  fi
+}
+
+FROM_NE1CC=false
+case "${1:-}" in
+  -h|--help) usage 0 ;;
+  --list) list_archived; exit 0 ;;
+  --from-ne1cc|--from-n1ecc)
+    FROM_NE1CC=true
+    shift
+    [[ $# -eq 1 ]] || usage 1
+    SRC="$(find_project "$1")"
+    do_archive "$SRC" true
+    ;;
+  "")
+    usage 1
+    ;;
+  *)
+    SRC="$(find_project "$1")"
+    do_archive "$SRC" false
+    ;;
+esac

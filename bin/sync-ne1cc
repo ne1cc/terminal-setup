@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Sync all github.com/ne1cc repositories into ~/Github/ne1cc/
+# Usage:
+#   sync-ne1cc          # rename outdated + clone missing + fast-forward pull existing
+#   sync-ne1cc --list   # show local vs remote status
+#   sync-ne1cc --pull   # rename outdated + pull only, skip new clones
+#   sync-ne1cc --rename # rename outdated local folders to match GitHub remotes
+#
+set -euo pipefail
+
+NE1CC_DIR="${NE1CC_DIR:-$HOME/Github/ne1cc}"
+EXCLUDE_FILE="${GITHUB_ROOT:-$HOME/Github}/_tools/archive-exclude.txt"
+MODE="${1:---sync}"
+
+mkdir -p "$NE1CC_DIR"
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "   WARN: gh CLI not installed. Skipping ne1cc sync."
+  exit 0
+fi
+
+if ! gh auth status >/dev/null 2>&1; then
+  echo "   WARN: gh CLI not authenticated. Run 'gh auth login' to enable repo sync."
+  exit 0
+fi
+
+is_excluded() {
+  local name="$1"
+  [[ -f "$EXCLUDE_FILE" ]] && grep -vxE '^\s*(#|$)' "$EXCLUDE_FILE" | grep -qxF "$name"
+}
+
+list_repos() {
+  gh api user/repos --paginate \
+    -q '.[] | select(.fork == false) | select(.name != "SystemDashboard") | .name' \
+    | sort
+}
+
+clone_or_pull() {
+  local name="$1"
+  local path="${NE1CC_DIR}/${name}"
+  local https_url="https://github.com/ne1cc/${name}.git"
+
+  if [[ -d "${path}/.git" ]]; then
+    echo ">> pull  ${name}"
+    git -C "$path" remote set-url origin "$https_url"
+    git -C "$path" fetch origin --prune
+    current_branch="$(git -C "$path" symbolic-ref -q --short HEAD || true)"
+    if [[ -n "$current_branch" ]]; then
+      git -C "$path" pull --ff-only origin "$current_branch" || {
+        echo "   WARN: ${name} pull failed (local changes or diverged branch?)"
+      }
+    fi
+  else
+    if is_excluded "$name"; then
+      echo ">> skip  ${name} (archived locally — see archive-exclude.txt)"
+      return 0
+    fi
+    echo ">> clone ${name}"
+    gh repo clone "ne1cc/${name}" "$path"
+  fi
+}
+
+detect_and_rename_outdated() {
+  local -a remote_list=("$@")
+  for dir in "$NE1CC_DIR"/*; do
+    [[ -d "$dir/.git" ]] || continue
+    local folder="$(basename "$dir")"
+
+    # Fast path: already matches an active remote repo
+    if printf '%s\n' "${remote_list[@]}" | grep -qxF "$folder"; then
+      continue
+    fi
+
+    local remote_url="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
+    [[ -z "$remote_url" ]] && continue
+
+    local slug="${remote_url%.git}"
+    slug="${slug#*github.com/}"
+    slug="${slug#*github.com:}"
+
+    local canonical="$(gh api "repos/$slug" -q '.name' 2>/dev/null || true)"
+    if [[ -n "$canonical" && "$canonical" != "$folder" ]]; then
+      if [[ -e "$NE1CC_DIR/$canonical" ]]; then
+        echo "   WARN: cannot rename ${folder} -> ${canonical}: destination already exists"
+      else
+        echo ">> rename ${folder} -> ${canonical} (renamed on GitHub)"
+        mv "$dir" "$NE1CC_DIR/$canonical"
+        git -C "$NE1CC_DIR/$canonical" remote set-url origin "https://github.com/ne1cc/${canonical}.git"
+      fi
+    fi
+  done
+}
+
+# Fetch remote repo list safely (avoids bash < <(...) /dev/fd issues on Android/Termux)
+get_repos_array() {
+  local tmp
+  tmp=$(mktemp)
+  list_repos > "$tmp"
+  repos=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && repos+=("$line")
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
+case "$MODE" in
+  --rename)
+    get_repos_array
+    detect_and_rename_outdated "${repos[@]}"
+    echo "Done checking repository renames."
+    ;;
+  --list)
+    get_repos_array
+    echo "Local ne1cc repos in ${NE1CC_DIR}:"
+    for name in "${repos[@]}"; do
+      if [[ -d "${NE1CC_DIR}/${name}/.git" ]]; then
+        branch="$(git -C "${NE1CC_DIR}/${name}" branch --show-current 2>/dev/null || echo "?")"
+        dirty=""
+        [[ -n "$(git -C "${NE1CC_DIR}/${name}" status --porcelain 2>/dev/null)" ]] && dirty=" *"
+        echo "  [ok] ${name} (${branch})${dirty}"
+      else
+        echo "  [--] ${name}  (not cloned)"
+      fi
+    done
+    ;;
+  --pull)
+    get_repos_array
+    detect_and_rename_outdated "${repos[@]}"
+    for name in "${repos[@]}"; do
+      [[ -d "${NE1CC_DIR}/${name}/.git" ]] && clone_or_pull "$name"
+    done
+    ;;
+  --sync|*)
+    get_repos_array
+    detect_and_rename_outdated "${repos[@]}"
+    echo "Syncing ne1cc repos -> ${NE1CC_DIR}"
+    for name in "${repos[@]}"; do
+      clone_or_pull "$name" || echo "   WARN: skipped ${name} due to error"
+    done
+    echo "Done."
+    ;;
+esac

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Open GitHub profile pin customization and print the recommended order.
+
+set -euo pipefail
+
+REPOS=(
+  "olist-lakehouse"
+  "ab-testing-dagster"
+  "dhs-stunting-pipeline"
+  "ticker-change"
+)
+
+echo "Pin these 4 repos on your GitHub profile (in this order):"
+echo ""
+for i in "${!REPOS[@]}"; do
+  echo "  $((i + 1)). ne1cc/${REPOS[$i]}"
+  echo "     https://github.com/ne1cc/${REPOS[$i]}"
+done
+echo ""
+echo "Opening your GitHub profile — click 'Customize your pins' and select the repos above."
+echo ""
+
+if command -v open >/dev/null; then
+  open "https://github.com/ne1cc"
+elif command -v xdg-open >/dev/null; then
+  xdg-open "https://github.com/ne1cc"
+else
+  echo "Visit: https://github.com/ne1cc"
+fi

@@ -653,6 +653,86 @@ $diff")
 }
 
 # ==============================================================================
+# GITHUB WORKSPACE & REPOSITORY SYNC (terminal-configs port)
+# ==============================================================================
+: "${GITHUB_ROOT:=$HOME/Github}"
+export NE1CC_DIR="$GITHUB_ROOT/ne1cc"
+export WORK_DIR="$GITHUB_ROOT/sun-alexander-dev"
+
+# Smart jump into ne1cc repos:
+#   ghn                 -> interactive fzf picker with git preview, cds directly into selected repo
+#   ghn <repo-name>     -> cds directly to ~/Github/ne1cc/<repo-name> (or closest match)
+#   ghn -s [repo-name]  -> opens/attaches dedicated tmux session via tmux-sessionizer
+#   ghn --root          -> cd ~/Github/ne1cc
+ghn() {
+  local target_dir
+  local repo_dir="${NE1CC_DIR:-$HOME/Github/ne1cc}"
+
+  if [[ "$1" == "--root" || "$1" == "-r" ]]; then
+    cd "$repo_dir"
+    return 0
+  fi
+
+  if [[ "$1" == "-s" ]]; then
+    shift
+    if [[ $# -eq 0 ]]; then
+      tmux-sessionizer
+    else
+      local match
+      match=$(find "$repo_dir" -mindepth 1 -maxdepth 1 -type d -name "*$1*" 2>/dev/null | head -n 1)
+      if [[ -n "$match" ]]; then
+        tmux-sessionizer "$match"
+      else
+        tmux-sessionizer "$repo_dir/$1"
+      fi
+    fi
+    return 0
+  fi
+
+  if [[ $# -eq 0 ]]; then
+    if [[ -t 0 && -t 1 ]] && command -v fzf >/dev/null 2>&1; then
+      target_dir=$(
+        find -L "$repo_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
+          sed 's|/*$||; s|.*/||' |
+          fzf --prompt="ne1cc repo > " \
+              --preview="git -C '$repo_dir/{}' status -sb 2>/dev/null || ls -la '$repo_dir/{}'" \
+              --preview-window="right:50%:wrap"
+      )
+      [[ -z "$target_dir" ]] && return 0
+      cd "$repo_dir/$target_dir"
+      return 0
+    else
+      cd "$repo_dir"
+      return 0
+    fi
+  fi
+
+  if [[ -d "$repo_dir/$1" ]]; then
+    cd "$repo_dir/$1"
+  else
+    local fuzzy_match
+    fuzzy_match=$(find "$repo_dir" -mindepth 1 -maxdepth 1 -type d -name "*$1*" 2>/dev/null | head -n 1)
+    if [[ -n "$fuzzy_match" && -d "$fuzzy_match" ]]; then
+      cd "$fuzzy_match"
+    else
+      echo "No matching repository for '$1' under $repo_dir" >&2
+      return 1
+    fi
+  fi
+}
+alias ghr=ghn
+alias ghex='cd "$GITHUB_ROOT/explore"'
+alias ghws='cd "$GITHUB_ROOT/workspace"'
+alias ghcfg='cd "$GITHUB_ROOT/config"'
+alias ghroot='cd "$GITHUB_ROOT"'
+alias ghsync='sync-ne1cc'
+alias sync-ne1cc='sync-ne1cc'
+alias ghsync-list='sync-ne1cc --list'
+alias ghsync-pull='sync-ne1cc --pull'
+alias ghpin='pin-portfolio'
+alias ghar='gharchive'
+
+# ==============================================================================
 # MODERN DEV TOOLS & FUZZY WORKFLOWS
 # ==============================================================================
 
