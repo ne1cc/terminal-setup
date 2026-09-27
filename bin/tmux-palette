@@ -39,6 +39,8 @@ MENU=$(cat << 'ACTIONS'
 📦 Stash Active Window   | Move current window into background 'stash' session    | tmux has-session -t stash 2>/dev/null || tmux new-session -ds stash -n scratch; tmux move-window -t stash:
 📥 Unstash Window        | Retrieve stashed window back into current session      | tmux list-windows -t stash -F '#I: #W' 2>/dev/null | fzf --reverse | cut -d: -f1 | xargs -I{} tmux move-window -s stash:{} -t #{session_name}:
 🤖 Claude Popup          | Toggle persistent centered Claude assistant popup      | tmux attach-session -t claude-popup || tmux new-session -s claude-popup 'claude'
+🚀 Antigravity Popup     | Toggle centered Antigravity YOLO popup session         | tmux attach-session -t agyy-popup || tmux new-session -s agyy-popup 'agyy'
+⚡ Antigravity Split     | Open 35% side-by-side Antigravity YOLO split pane      | tmux split-window -h -l 35% -c "#{pane_current_path}" "agyy"
 🐙 Floating Lazygit      | Toggle centered 90% lazygit modal                      | lazygit
 💾 Save Session Snapshot | Prompt for custom snapshot name and backup state       | command-prompt -p "Save snapshot as:" "$HOME/bin/tmux-save-named %1"
 🔄 Restore Snapshot      | Fuzzy select and restore a named session snapshot      | $HOME/bin/tmux-restore-named

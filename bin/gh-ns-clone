@@ -8,10 +8,18 @@ if [[ $# -lt 1 ]]; then
 fi
 
 spec="$1"; shift
+# Strip common GitHub URL schemes and suffixes
+spec="${spec#https://github.com/}"
+spec="${spec#http://github.com/}"
+spec="${spec#git@github.com:}"
+spec="${spec#ssh://git@github.com/}"
+spec="${spec%.git}"
+spec="${spec%/}"
+
 owner="${spec%%/*}"
 repo="${spec#*/}"
 if [[ -z "$owner" || -z "$repo" || "$owner" == "$spec" ]]; then
-  echo "error: expected owner/repo, got '$spec'" >&2
+  echo "error: expected owner/repo or github url, got '$spec'" >&2
   exit 2
 fi
 
@@ -23,4 +31,8 @@ fi
 
 mkdir -p "$(dirname "$dest")"
 echo "Cloning $spec → $dest"
-exec gh repo clone "$spec" "$dest" "$@"
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  exec gh repo clone "$spec" "$dest" "$@"
+else
+  exec git clone "https://github.com/$owner/$repo.git" "$dest" "$@"
+fi

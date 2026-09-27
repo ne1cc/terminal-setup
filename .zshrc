@@ -11,6 +11,11 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     export IS_WSL=1
 fi
 
+# Detect Termux
+if [[ -d "/data/data/com.termux" ]] || [[ -n "${TERMUX_VERSION:-}" ]]; then
+    export IS_TERMUX=1
+fi
+
 # Locale sanitization (fixes macOS ICU format warnings in bash / tools)
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
@@ -62,7 +67,9 @@ elif [[ -d "/home/linuxbrew/.linuxbrew" ]]; then
     eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 fi
 
-# User-local bin
+# User-local bin & Termux / system bin
+[[ -d "/data/data/com.termux/files/usr/bin" ]] && export PATH="/data/data/com.termux/files/usr/bin:$PATH"
+[[ -d "/root/.local/bin" ]] && export PATH="/root/.local/bin:$PATH"
 [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 [[ -d "$HOME/bin" ]]        && export PATH="$HOME/bin:$PATH"
 
@@ -98,17 +105,20 @@ fi
 
 # Auto-attach or create a persistent 'main' tmux session when launching
 # Alacritty directly (mirrors Ghostty's command = tmux new-session -A -s main).
-if [[ -z "$TMUX" ]] && command -v tmux >/dev/null; then
+if [[ -z "$TMUX" ]] && [[ -o interactive ]] && [[ -t 1 ]] && [[ "$TERM" != "dumb" ]] && [[ -z "${NO_AUTO_TMUX:-}" ]] && command -v tmux >/dev/null; then
     exec tmux new-session -A -s main
 fi
 
 # ==============================================================================
-# 7. CLIPBOARD COMPATIBILITY (Linux xclip / macOS pbcopy shim)
+# 7. CLIPBOARD COMPATIBILITY (Linux xclip / macOS pbcopy shim / Termux)
 # ==============================================================================
 
-# Provide pbcopy / pbpaste on Linux so macOS-era scripts still work
+# Provide pbcopy / pbpaste on Linux / Termux so macOS-era scripts still work
 if [[ "$OSTYPE" != darwin* ]]; then
-    if [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1; then
+    if command -v termux-clipboard-set >/dev/null 2>&1; then
+        alias pbcopy='termux-clipboard-set'
+        alias pbpaste='termux-clipboard-get'
+    elif [[ -n "${WAYLAND_DISPLAY:-}" ]] && command -v wl-copy >/dev/null 2>&1; then
         alias pbcopy='wl-copy'
         alias pbpaste='wl-paste'
     elif command -v xclip >/dev/null 2>&1; then
@@ -185,10 +195,12 @@ copylast() {
 }
 
 
-# Cross-platform 'open' command: macOS has it natively, Linux uses xdg-open, WSL uses cmd.exe
+# Cross-platform 'open' command: macOS has it natively, Termux uses termux-open, Linux uses xdg-open, WSL uses cmd.exe
 if [[ "$OSTYPE" != darwin* ]] && ! command -v open >/dev/null; then
     open() {
-        if command -v xdg-open >/dev/null; then
+        if command -v termux-open >/dev/null; then
+            termux-open "$@"
+        elif command -v xdg-open >/dev/null; then
             xdg-open "$@" &>/dev/null &
         elif [[ -n "${IS_WSL:-}" ]] && command -v cmd.exe >/dev/null; then
             cmd.exe /c start "" "$@" &>/dev/null &
@@ -287,10 +299,10 @@ else
             return 1
         fi
     }
-    alias prev='xdg-open'
-    alias preview='xdg-open'
-    alias finder='xdg-open'
-    alias of='xdg-open'
+    alias prev='open'
+    alias preview='open'
+    alias finder='open'
+    alias of='open'
 fi
 alias omd='om'
 alias onemarkdown='om'
@@ -685,18 +697,23 @@ if command -v fzf >/dev/null 2>&1; then
   fi
 
   export FZF_DEFAULT_OPTS="--height 40% --layout=reverse --border --inline-info"
-  if command -v fd >/dev/null 2>&1; then
-    export FZF_DEFAULT_COMMAND='fd --type f --strip-cwd-prefix --hidden --follow --exclude .git'
+  if ! command -v fd >/dev/null 2>&1 && command -v fdfind >/dev/null 2>&1; then
+    alias fd='fdfind'
+  fi
+  if command -v fd >/dev/null 2>&1 || command -v fdfind >/dev/null 2>&1; then
+    _FD_CMD="fd"
+    command -v fd >/dev/null 2>&1 || _FD_CMD="fdfind"
+    export FZF_DEFAULT_COMMAND="$_FD_CMD --type f --strip-cwd-prefix --hidden --follow --exclude .git"
     export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
-    export FZF_ALT_C_COMMAND='fd --type d --strip-cwd-prefix --hidden --follow --exclude .git'
+    export FZF_ALT_C_COMMAND="$_FD_CMD --type d --strip-cwd-prefix --hidden --follow --exclude .git"
 
     # Use fd inside the ** completion popup
     _fzf_compgen_path() {
-      fd --hidden --follow --exclude ".git" . "$1"
+      ${_FD_CMD:-fd} --hidden --follow --exclude ".git" . "$1"
     }
 
     _fzf_compgen_dir() {
-      fd --type d --hidden --follow --exclude ".git" . "$1"
+      ${_FD_CMD:-fd} --type d --hidden --follow --exclude ".git" . "$1"
     }
   fi
 fi
@@ -726,8 +743,14 @@ if command -v task >/dev/null; then
   alias tdev='task project:dev list'
 fi
 
-if command -v bat >/dev/null; then
-  alias cat='bat --style=header,grid,snip --theme=ansi'
+if ! command -v bat >/dev/null 2>&1 && command -v batcat >/dev/null 2>&1; then
+  alias bat='batcat'
+fi
+
+if command -v bat >/dev/null 2>&1 || command -v batcat >/dev/null 2>&1; then
+  _BAT_CMD="bat"
+  command -v bat >/dev/null 2>&1 || _BAT_CMD="batcat"
+  alias cat="$_BAT_CMD --style=header,grid,snip --theme=ansi"
 fi
 
 if command -v duf >/dev/null; then
@@ -952,15 +975,24 @@ bindkey '^K' up-line-or-history
 bindkey -M viins '^K' up-line-or-history
 bindkey -M vicmd '^K' up-line-or-history
 
-[[ -d "$HOME/.claude/bin" ]] && export PATH="$HOME/.claude/bin:$PATH"
+# Alias for agy/agyy
+alias agyy='agy --dangerously-skip-permissions'
 
-unalias wmo 2>/dev/null || true
-wmo() {
-  if [ -n "$1" ]; then
-    workmux open "$1"
-  else
-    local b
-    b=$(workmux list 2>/dev/null | tail -n +2 | grep -v '(here)' | awk '{print $1}' | fzf --prompt='Select worktree: ' --reverse)
-    [ -n "$b" ] && workmux open "$b"
+# Auto-activate python .venv when entering a directory
+autoload -U add-zsh-hook
+_auto_venv() {
+  if [[ -n "$VIRTUAL_ENV" ]]; then
+    # If we navigated out of the active venv directory, deactivate it
+    local parent_venv_dir="${VIRTUAL_ENV:h}"
+    if [[ "$PWD" != "$parent_venv_dir"* ]]; then
+      deactivate 2>/dev/null
+    fi
+  fi
+  # If current directory has a .venv and it's not active, activate it
+  if [[ -z "$VIRTUAL_ENV" && -f "./.venv/bin/activate" ]]; then
+    source "./.venv/bin/activate"
   fi
 }
+add-zsh-hook chpwd _auto_venv
+_auto_venv
+

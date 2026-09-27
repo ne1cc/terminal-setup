@@ -59,6 +59,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   PLATFORM=macOS
 elif grep -qi microsoft /proc/version 2>/dev/null; then
   PLATFORM=WSL
+elif [[ -d "/data/data/com.termux" ]] || [[ -n "${TERMUX_VERSION:-}" ]]; then
+  PLATFORM=Termux
 else
   PLATFORM=Linux
 fi
@@ -82,21 +84,27 @@ command -v git >/dev/null 2>&1 && ok "git" || { echo "git is required. Install i
 if command -v zsh >/dev/null 2>&1; then
   ok "zsh ($(zsh --version | awk '{print $2}'))"
 elif "$DRY_RUN"; then
-  warn "[dry-run] zsh missing — would install via Homebrew"
+  warn "[dry-run] zsh missing — would install via package manager"
 elif command -v brew >/dev/null 2>&1; then
   info "Installing zsh via Homebrew"
   brew install zsh
+elif command -v pkg >/dev/null 2>&1; then
+  info "Installing zsh via pkg"
+  pkg install -y zsh
+elif command -v apt-get >/dev/null 2>&1; then
+  info "Installing zsh via apt"
+  apt-get update && apt-get install -y zsh
 else
-  echo "zsh is required. Install it (apt install zsh / brew install zsh) and re-run." >&2
+  echo "zsh is required. Install it (apt install zsh / pkg install zsh / brew install zsh) and re-run." >&2
   exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Homebrew
+# 2. Package Manager
 # ------------------------------------------------------------------------------
-header "Homebrew"
+header "Package Manager"
 if command -v brew >/dev/null 2>&1; then
-  ok "already installed"
+  ok "Homebrew already installed"
 elif [[ "$PLATFORM" == "macOS" ]]; then
   if "$DRY_RUN"; then
     info "[dry-run] would install Homebrew"
@@ -108,9 +116,13 @@ elif [[ "$PLATFORM" == "macOS" ]]; then
 elif [[ -x "/home/linuxbrew/.linuxbrew/bin/brew" ]]; then
   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"
   ok "Linuxbrew found"
+elif [[ "$PLATFORM" == "Termux" ]] || command -v pkg >/dev/null 2>&1; then
+  ok "Termux package manager (pkg) found"
+elif command -v apt-get >/dev/null 2>&1; then
+  ok "APT package manager found"
 else
-  warn "Homebrew not found — package installation will be skipped."
-  info "Install it from https://docs.brew.sh then re-run ./install"
+  warn "Package manager not found — package installation will be skipped."
+  info "Install Homebrew from https://docs.brew.sh then re-run ./install"
   SKIP_PACKAGES=true
 fi
 

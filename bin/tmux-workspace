@@ -29,6 +29,12 @@ case "$TYPE" in
         tmux select-pane -t :.1
         tmux display-message "✓ AI workspace initialized (Editor + Claude split)"
         ;;
+    agy|agyy)
+        # 2-pane side-by-side: Editor (60%) + Antigravity YOLO (40%)
+        tmux split-window -h -l 40% -c "$CURRENT_DIR" "agyy"
+        tmux select-pane -t :.1
+        tmux display-message "✓ Antigravity YOLO workspace initialized (Editor + agyy split)"
+        ;;
     triage)
         # 4-pane triage matrix: Lazygit, Editor, Logs/Server, Scratch Shell
         tmux split-window -h -c "$CURRENT_DIR"

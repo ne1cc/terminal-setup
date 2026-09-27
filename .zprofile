@@ -21,7 +21,7 @@ export DOTFILES="$HOME/dotfiles"
 export GITHUB_ROOT="$HOME/Github"
 
 # Custom scripts (bin/ in the dotfiles repo, stow'd to ~/bin)
-export PATH="$HOME/Github/_tools:$HOME/bin:$HOME/.local/bin:$PATH"
+export PATH="$HOME/Github/_tools:$HOME/bin:$HOME/.local/bin:${PREFIX:-/data/data/com.termux/files/usr}/bin:$PATH"
 
 # OrbStack — macOS only
 [[ -f ~/.orbstack/shell/init.zsh ]] && source ~/.orbstack/shell/init.zsh

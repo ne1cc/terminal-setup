@@ -79,6 +79,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 elif grep -qi microsoft /proc/version 2>/dev/null; then
   PLATFORM=WSL
   BREWFILE="$REPO_DIR/Brewfile.linux"
+elif [[ -d "/data/data/com.termux" ]] || [[ -n "${TERMUX_VERSION:-}" ]]; then
+  PLATFORM=Termux
+  BREWFILE="$REPO_DIR/Brewfile.linux"
 else
   PLATFORM=Linux
   BREWFILE="$REPO_DIR/Brewfile.linux"
@@ -142,11 +145,16 @@ if [[ -L "$LEGACY_GHOSTTY_CONFIG" && "$(readlink "$LEGACY_GHOSTTY_CONFIG")" == "
 fi
 
 if "$INSTALL_PACKAGES"; then
-  if ! command -v brew >/dev/null 2>&1; then
-    printf 'Homebrew is required for --install-packages.\n' >&2
+  if command -v brew >/dev/null 2>&1; then
+    run brew bundle --file="$BREWFILE"
+  elif command -v pkg >/dev/null 2>&1; then
+    run pkg install -y zsh tmux git curl fzf eza bat ripgrep zoxide direnv termux-api
+  elif command -v apt-get >/dev/null 2>&1; then
+    run apt-get update && run apt-get install -y zsh tmux git curl fzf ripgrep fd-find eza direnv zoxide bat duf gh htop stow
+  else
+    printf 'Homebrew, pkg, or apt-get is required for --install-packages.\n' >&2
     exit 1
   fi
-  run brew bundle --file="$BREWFILE"
 fi
 
 if ! "$SKIP_PLUGINS"; then

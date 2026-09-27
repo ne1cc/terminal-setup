@@ -36,3 +36,5 @@
 
 # Per-namespace identities (optional): when setup-github-workspace runs with
 # --with-workspace it appends includeIf blocks for ~/Github/<owner>/ here.
+[safe]
+	directory = *

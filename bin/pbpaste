@@ -1,0 +1,17 @@
+#!/bin/sh
+# Portable clipboard paste helper (Termux / Wayland / X11 / WSL / macOS)
+if command -v termux-clipboard-get >/dev/null 2>&1; then
+    exec termux-clipboard-get "$@"
+elif command -v wl-paste >/dev/null 2>&1; then
+    exec wl-paste "$@"
+elif command -v xclip >/dev/null 2>&1; then
+    exec xclip -selection clipboard -o "$@"
+elif command -v xsel >/dev/null 2>&1; then
+    exec xsel --clipboard --output "$@"
+elif command -v powershell.exe >/dev/null 2>&1; then
+    exec powershell.exe -NoProfile -Command "Get-Clipboard"
+elif command -v pbpaste >/dev/null 2>&1; then
+    exec /usr/bin/pbpaste "$@"
+else
+    exit 1
+fi
