@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# repo-summarize — Headless repository file summarizer powered by Antigravity (agyy)
+#
+# Scans a project, discovers key implementation files using smart heuristics,
+# streams them through Antigravity (agyy -p), writes comprehensive architectural
+# explanations to docs/architecture/<filename>.md, then generates a synthesised
+# INDEX.md that connects all the pieces into one big-picture overview.
+#
+# Output is SEPARATE from single-file <Leader>ae explanations (docs/explanations/).
+#
+# Usage:
+#   repo-summarize                      # summarize current git repository
+#   repo-summarize /path/to/repo        # target specific repository
+#   repo-summarize --open               # open INDEX.md in One Markdown upon finish
+#   repo-summarize --dry-run            # show discovered files without calling AI
+#   repo-summarize --max-files N        # process up to N files (default: all)
+#   repo-summarize --force              # overwrite existing summaries
+#   repo-summarize --filter <substr>    # only process files matching substr
+#   repo-summarize --status             # show progress of current / background run
+# ==============================================================================
+
+set -euo pipefail
+
+OPEN_IN_OMD=false
+DRY_RUN=false
+FORCE=false
+CHECK_STATUS=false
+MAX_FILES=0   # 0 = no cap (process all files)
+TARGET_DIR=""
+FILTER=""
+
+usage() {
+  sed -n '2,22p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--open) OPEN_IN_OMD=true; shift ;;
+    -n|--dry-run) DRY_RUN=true; shift ;;
+    -f|--force) FORCE=true; shift ;;
+    -s|--status) CHECK_STATUS=true; shift ;;
+    -m|--max-files)
+      MAX_FILES="${2:-0}"
+      shift 2
+      ;;
+    --filter)
+      FILTER="${2:-}"
+      shift 2
+      ;;
+    -h|--help) usage 0 ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage 1
+      ;;
+    *)
+      if [[ -z "$TARGET_DIR" ]]; then
+        TARGET_DIR="$1"
+        shift
+      else
+        echo "Unexpected argument: $1" >&2
+        usage 1
+      fi
+      ;;
+  esac
+done
+
+# Resolve target directory
+if [[ -z "$TARGET_DIR" ]]; then
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    TARGET_DIR="$(git rev-parse --show-toplevel)"
+  else
+    TARGET_DIR="$(pwd)"
+  fi
+else
+  TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
+fi
+
+cd "$TARGET_DIR"
+REPO_NAME="$(basename "$TARGET_DIR")"
+DOCS_DIR="$TARGET_DIR/docs/architecture"
+INDEX_FILE="$DOCS_DIR/INDEX.md"
+PROGRESS_FILE="$DOCS_DIR/.progress.json"
+
+# Fast path: query status of running / last summarization
+if "$CHECK_STATUS"; then
+  if [[ ! -f "$PROGRESS_FILE" ]]; then
+    existing_count=$(find "$DOCS_DIR" -name "*.md" ! -name "INDEX.md" 2>/dev/null | wc -l | tr -d ' ')
+    echo "No active .progress.json in $DOCS_DIR."
+    echo "Generated architecture docs: $existing_count files."
+    exit 0
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    st="$(jq -r .status "$PROGRESS_FILE")"
+    tot="$(jq -r .total_files "$PROGRESS_FILE")"
+    proc="$(jq -r .processed "$PROGRESS_FILE")"
+    pct="$(jq -r .percent "$PROGRESS_FILE")"
+    cur="$(jq -r .current_file "$PROGRESS_FILE")"
+    upd="$(jq -r .updated_at "$PROGRESS_FILE")"
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo " 📊 Repo Summarize Progress: $REPO_NAME"
+    echo " Status    : $st"
+    echo " Progress  : $proc / $tot files ($pct%)"
+    echo " Current   : $cur"
+    echo " Updated   : $upd"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  else
+    cat "$PROGRESS_FILE"
+  fi
+  exit 0
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " 📚 Antigravity Headless Repo Summarizer (agyy)"
+echo " Target : $TARGET_DIR"
+echo " Docs   : docs/architecture/"
+echo " Limit  : ${MAX_FILES:-no cap}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+mkdir -p "$DOCS_DIR"
+
+# Discover files using fd or git ls-files
+find_files() {
+  if command -v fd >/dev/null 2>&1; then
+    fd -t f \
+      -E ".git" \
+      -E "node_modules" \
+      -E ".venv" \
+      -E "venv" \
+      -E "__pycache__" \
+      -E ".worktrees" \
+      -E "dist" \
+      -E "build" \
+      -E "target" \
+      -E "vendor" \
+      -E "coverage" \
+      -E ".next" \
+      -E ".turbo" \
+      -E "third-party" \
+      -E "lazy-lock.json" \
+      -E "package-lock.json" \
+      -E "yarn.lock" \
+      -E "pnpm-lock.yaml" \
+      -E "poetry.lock" \
+      -E "uv.lock" \
+      -E "Cargo.lock" \
+      -E "Gemfile.lock" \
+      -E "*.min.js" \
+      -E "*.min.css" \
+      -E "*.map" \
+      -E "*.svg" \
+      -E "*.png" \
+      -E "*.jpg" \
+      -E "*.jpeg" \
+      -E "*.gif" \
+      -E "*.ico" \
+      -E "*.woff*" \
+      -E "*.ttf" \
+      -E "docs/architecture/*" \
+      -E "docs/explanations/*" \
+      -e py -e ts -e tsx -e js -e jsx \
+      -e go -e rs -e lua -e sh -e zsh \
+      -e sql -e cpp -e c -e h -e hpp \
+      -e java -e cmake -e kt -e swift \
+      . "$TARGET_DIR"
+  elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git ls-files \
+      | grep -E '\.(py|ts|tsx|js|jsx|go|rs|lua|sh|zsh|sql|cpp|c|h|hpp|java|cmake|kt|swift)$' \
+      | grep -vE '(node_modules|\.venv|dist/|build/|target/|third-party/|docs/architecture/|docs/explanations/)'
+  else
+    find . -type f \( \
+      -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" \
+      -o -name "*.rs" -o -name "*.lua" -o -name "*.sh" \
+      -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.c" \
+    \) | sed 's|^\./||'
+  fi
+}
+
+# Collect candidate files
+ALL_CANDIDATES=()
+_find_tmp=$(mktemp)
+find_files > "$_find_tmp"
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  rel_path="${f#"$TARGET_DIR"/}"
+  rel_path="${rel_path#./}"
+
+  if [[ -n "$FILTER" ]] && [[ "$rel_path" != *"$FILTER"* ]]; then
+    continue
+  fi
+  ALL_CANDIDATES+=("$rel_path")
+done < "$_find_tmp"
+rm -f "$_find_tmp" 
+
+if [[ ${#ALL_CANDIDATES[@]} -eq 0 ]]; then
+  echo "No relevant code files discovered under $TARGET_DIR."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Smart scoring: ensures directory breadth coverage across ALL top-level dirs.
+#
+# Bash 3.2 compatible (macOS default). Uses awk for the round-robin grouping
+# instead of bash 4 associative arrays.
+#
+# Strategy:
+#   1. Emit "score<TAB>top_dir<TAB>filepath" for every candidate
+#   2. awk groups by top_dir, sorts within each group by score, then round-robins
+#      across directories so every module gets at least one representative file
+#      before any module gets a second.
+# ---------------------------------------------------------------------------
+score_file_line() {
+  local p="$1"
+  local base top_dir score
+  base="$(basename "$p")"
+  top_dir="${p%%/*}"
+  [[ "$top_dir" == "$p" ]] && top_dir="."
+
+  if [[ "$base" == "CMakeLists.txt" ]] || \
+     [[ "$base" =~ ^(main|app|index|server|cli|setup|init|entry)\. ]]; then
+    score=10
+  elif [[ "$p" =~ tests?/ ]] || [[ "$base" =~ _test\. ]] || \
+       [[ "$base" =~ \.test\. ]] || [[ "$base" =~ _spec\. ]]; then
+    score=80
+  else
+    score=50
+  fi
+  printf '%d\t%s\t%s\n' "$score" "$top_dir" "$p"
+}
+
+# Build scored list then round-robin in awk (no bash 4 / no gawk needed)
+# Approach:
+#   1. Emit "score<TAB>top_dir<TAB>filepath" lines
+#   2. sort by top_dir then score → groups are contiguous per dir
+#   3. awk picks one file per dir per pass (round-robin) using SUBSEP separator
+_score_tmp=$(mktemp)
+_sorted_tmp=$(mktemp)
+for f in "${ALL_CANDIDATES[@]}"; do
+  score_file_line "$f"
+done > "$_score_tmp"
+
+sort -t$'	' -k2,2 -k1,1n -k3,3 < "$_score_tmp" | awk -F'	' '
+  {
+    dir = $2
+    file = $3
+    if (bucket[dir] == "") {
+      ndirs++
+      dirs[ndirs] = dir
+    }
+    bucket[dir] = (bucket[dir] == "") ? file : bucket[dir] SUBSEP file
+    counts[dir]++
+    if (counts[dir] > max_count) max_count = counts[dir]
+  }
+  END {
+    for (d = 1; d <= ndirs; d++) {
+      dir = dirs[d]
+      n = split(bucket[dir], arr, SUBSEP)
+      for (i = 1; i <= n; i++) files[dir, i] = arr[i]
+    }
+    for (pass = 1; pass <= max_count; pass++) {
+      for (d = 1; d <= ndirs; d++) {
+        dir = dirs[d]
+        if (files[dir, pass] != "") print files[dir, pass]
+      }
+    }
+  }' > "$_sorted_tmp"
+
+SORTED_FILES=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && SORTED_FILES+=("$line")
+done < "$_sorted_tmp"
+rm -f "$_score_tmp" "$_sorted_tmp" 
+
+# Apply MAX_FILES cap only if explicitly set
+FILES_TO_PROCESS=()
+if [[ ${#SORTED_FILES[@]} -gt 0 ]]; then
+  if [[ "$MAX_FILES" -gt 0 ]]; then
+    FILES_TO_PROCESS=("${SORTED_FILES[@]:0:$MAX_FILES}")
+  else
+    FILES_TO_PROCESS=("${SORTED_FILES[@]}")
+  fi
+fi
+
+echo "Discovered ${#ALL_CANDIDATES[@]} candidate files. Processing ${#FILES_TO_PROCESS[@]} for summarization:"
+for f in "${FILES_TO_PROCESS[@]+"${FILES_TO_PROCESS[@]}"}"; do
+  echo "  • $f"
+done
+echo ""
+
+if "$DRY_RUN"; then
+  echo "Dry-run complete. Exiting without generating summaries."
+  exit 0
+fi
+
+if ! command -v agyy >/dev/null 2>&1; then
+  echo "Error: 'agyy' (or 'agy') command not found in PATH." >&2
+  exit 1
+fi
+
+INDEX_ENTRIES=()
+TOTAL_FILES=${#FILES_TO_PROCESS[@]}
+CURRENT_INDEX=0
+
+write_progress() {
+  local status="$1"
+  local current_file="$2"
+  local pct=0
+  if [[ "$TOTAL_FILES" -gt 0 ]]; then
+    pct=$(( CURRENT_INDEX * 100 / TOTAL_FILES ))
+  fi
+  cat <<EOF > "$PROGRESS_FILE"
+{
+  "status": "$status",
+  "total_files": $TOTAL_FILES,
+  "processed": $CURRENT_INDEX,
+  "percent": $pct,
+  "current_file": "$current_file",
+  "updated_at": "$(date +"%Y-%m-%d %H:%M:%S")"
+}
+EOF
+}
+# ---------------------------------------------------------------------------
+# Per-file summarization loop
+# ---------------------------------------------------------------------------
+for rel in "${FILES_TO_PROCESS[@]+"${FILES_TO_PROCESS[@]}"}"; do
+  CURRENT_INDEX=$(( CURRENT_INDEX + 1 ))
+  doc_rel="docs/architecture/${rel}.md"
+  doc_full="$TARGET_DIR/$doc_rel"
+  mkdir -p "$(dirname "$doc_full")"
+
+  ext="${rel##*.}"
+
+  if [[ -f "$doc_full" && "$FORCE" != "true" ]]; then
+    echo "⏩ [$CURRENT_INDEX/$TOTAL_FILES] Skip: $rel (already exists)"
+    write_progress "running" "$rel (cached)"
+    INDEX_ENTRIES+=("$rel")
+    continue
+  fi
+
+  echo "🧠 [$CURRENT_INDEX/$TOTAL_FILES] Summarizing: $rel → $doc_rel ..."
+  write_progress "running" "$rel"
+
+  file_content="$(cat "$TARGET_DIR/$rel" 2>/dev/null || true)"
+
+  tmp_prompt="$(mktemp /tmp/agyy_prompt.XXXXXX)"
+  cat <<EOF > "$tmp_prompt"
+You are a senior principal systems architect. Provide a deep, comprehensive technical explanation of the source file '$rel' from repository '$REPO_NAME'.
+
+Source File Content:
+\`\`\`$ext
+$file_content
+\`\`\`
+
+Structure your explanation with:
+1. **Executive Summary & System Role**: Core purpose, problem solved, and responsibilities within the larger project.
+2. **Architecture & Design Patterns**: Internal structure, state management, algorithmic patterns, and key abstractions.
+3. **Public APIs & Interfaces**: Key classes, structs, functions, methods, parameters, return types, and contracts.
+4. **Data Flow & Dependencies**: External imports, input pipelines, transformation logic, output, and side effects.
+5. **Notable Edge Cases & Constraints**: Error boundaries, concurrency handling, and operational trade-offs.
+
+Format in clean GitHub-Flavored Markdown. Do NOT wrap the entire document in a single outer code block.
+EOF
+
+  RESPONSE="$(agyy -p "$(cat "$tmp_prompt")" 2>/dev/null || agyy -p "Explain architecture of $rel")"
+  rm -f "$tmp_prompt"
+
+  cat <<EOF > "$doc_full"
+# Architecture Summary: \`$rel\`
+
+> **Source File**: [\`$rel\`](../../$rel)
+> **Repository**: \`$REPO_NAME\`
+> **Generated**: $(date +"%Y-%m-%d %H:%M:%S") via \`repo-summarize\` + \`agyy\`
+
+---
+
+$RESPONSE
+EOF
+
+  INDEX_ENTRIES+=("$rel")
+  echo "  ✓ [$CURRENT_INDEX/$TOTAL_FILES] Saved: $doc_rel"
+done
+
+# ---------------------------------------------------------------------------
+# Generate INDEX.md — AI-synthesised architectural overview
+# ---------------------------------------------------------------------------
+echo ""
+echo "🏗️  Generating architectural INDEX.md (AI synthesis of all summaries)..."
+write_progress "synthesizing_index" "INDEX.md"
+
+# Feed all per-file summaries into one big context for the INDEX synthesis
+ALL_SUMMARIES=""
+for rel in "${INDEX_ENTRIES[@]+"${INDEX_ENTRIES[@]}"}"; do
+  doc_full="$TARGET_DIR/docs/architecture/${rel}.md"
+  if [[ -f "$doc_full" ]]; then
+    ALL_SUMMARIES+="
+=== $rel ===
+$(cat "$doc_full")
+
+"
+  fi
+done
+
+tmp_index_prompt="$(mktemp /tmp/agyy_index.XXXXXX)"
+cat <<EOF > "$tmp_index_prompt"
+You are a principal architect synthesising documentation for the repository '$REPO_NAME'.
+
+Below are per-file architectural summaries for every key source file in the project.
+
+Your task: write a comprehensive INDEX.md that:
+1. **Big Picture Overview** — What is '$REPO_NAME'? What problem does it solve? Who uses it?
+2. **Module Map** — A Mermaid flowchart (flowchart TD) showing top-level directories and their relationships/dependencies.
+3. **Directory Breakdown** — For each top-level directory, one paragraph explaining its role and key files inside it.
+4. **Core Data Flows** — The most important 2-3 end-to-end flows through the codebase (e.g. "a DNS query arrives → ...").
+5. **Key Abstractions** — The 5-10 most important types, interfaces, or design patterns that everything else builds on.
+6. **File Index** — A markdown table with columns: File | Role | Key Exports linking to each .md doc using relative path docs/architecture/<file>.md.
+
+Per-file summaries:
+$ALL_SUMMARIES
+
+Write in clean GitHub-Flavored Markdown. Make this the definitive architectural reference for a new engineer joining the project.
+EOF
+
+INDEX_RESPONSE="$(agyy -p "$(cat "$tmp_index_prompt")" 2>/dev/null || echo "*(INDEX synthesis failed — see per-file docs above)*")"
+rm -f "$tmp_index_prompt"
+
+
+cat <<EOF > "$INDEX_FILE"
+# $REPO_NAME — Architectural Overview
+
+> Generated on $(date +"%Y-%m-%d %H:%M:%S") by \`repo-summarize\` + [Antigravity \`agyy\`](https://github.com/ne1cc/terminal-configs)
+> Per-file summaries are in \`docs/architecture/<path>.md\`
+
+---
+
+$INDEX_RESPONSE
+EOF
+
+write_progress "complete" "INDEX.md"
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "✓ All summaries generated!"
+echo "  Index  : $INDEX_FILE"
+echo "  Files  : ${#INDEX_ENTRIES[@]} summarized → docs/architecture/"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+if "$OPEN_IN_OMD"; then
+  if command -v omd >/dev/null 2>&1; then
+    echo "Opening $INDEX_FILE in One Markdown..."
+    omd "$INDEX_FILE"
+  elif [[ "$OSTYPE" == darwin* ]]; then
+    open -a "One Markdown" "$INDEX_FILE" 2>/dev/null || open "$INDEX_FILE"
+  else
+    glow -p "$INDEX_FILE" 2>/dev/null || xdg-open "$INDEX_FILE" 2>/dev/null || true
+  fi
+fi

@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# explain-viz — Zero-cost interactive graph of docs/explanations/
+#
+# Scans docs/explanations/**/*.md, extracts "Related Files" links from each,
+# and builds an interactive D3.js HTML graph. Clicking a node opens the .md
+# file in One Markdown (omd). No AI calls — purely static analysis.
+#
+# Usage:
+#   explain-viz                    # run in current git repo
+#   explain-viz /path/to/repo      # target specific repo
+#   explain-viz --open             # open GRAPH.html in browser after generating
+# ==============================================================================
+
+set -euo pipefail
+
+OPEN_BROWSER=false
+TARGET_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--open) OPEN_BROWSER=true; shift ;;
+    -h|--help)
+      sed -n '2,12p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    *)
+      if [[ -z "$TARGET_DIR" ]]; then TARGET_DIR="$1"; shift
+      else echo "Unexpected argument: $1" >&2; exit 1; fi
+      ;;
+  esac
+done
+
+if [[ -z "$TARGET_DIR" ]]; then
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    TARGET_DIR="$(git rev-parse --show-toplevel)"
+  else
+    TARGET_DIR="$(pwd)"
+  fi
+else
+  TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
+fi
+
+EXPLAIN_DIR="$TARGET_DIR/docs/explanations"
+OUT_FILE="$EXPLAIN_DIR/GRAPH.html"
+REPO_NAME="$(basename "$TARGET_DIR")"
+
+if [[ ! -d "$EXPLAIN_DIR" ]]; then
+  echo "No docs/explanations/ directory found in $TARGET_DIR."
+  echo "Run <Leader>ae on some files first to generate explanations."
+  exit 1
+fi
+
+# Collect all explained files (.md files, strip docs/explanations/ prefix and .md suffix)
+NODES=()
+_nodes_tmp=$(mktemp)
+if command -v fd >/dev/null 2>&1; then
+  fd -t f -e md . "$EXPLAIN_DIR" | sort > "$_nodes_tmp"
+else
+  find "$EXPLAIN_DIR" -name "*.md" | sort > "$_nodes_tmp"
+fi
+
+while IFS= read -r f; do
+  rel="${f#"$EXPLAIN_DIR"/}"
+  rel="${rel%.md}"
+  [[ "$rel" == "INDEX" || "$rel" == "GRAPH" || "$rel" == "XREF" ]] && continue
+  NODES+=("$rel")
+done < "$_nodes_tmp"
+rm -f "$_nodes_tmp" 
+
+if [[ ${#NODES[@]} -eq 0 ]]; then
+  echo "No explanation files found in $EXPLAIN_DIR."
+  echo "Run <Leader>ae on some files first."
+  exit 1
+fi
+
+echo "Found ${#NODES[@]} explained files. Building graph..."
+
+# Build the full nodes+links JSON in one Python3 call (fast — no subprocess-per-file)
+# Strategy for edges:
+#   1. Primary: parse actual source files for #include / import / require / use
+#   2. Fallback: if source not found, parse "Related Files" section from the .md
+# Matching: extract the basename of each include target and see if any explained
+# node ends with that basename (handles both relative and system includes).
+GRAPH_SCRIPT='
+import sys, os, re, json
+
+target_dir = sys.argv[1]
+explain_dir = sys.argv[2]
+nodes = sys.argv[3:]
+
+node_set = set(nodes)
+
+base_to_nodes = {}
+for n in nodes:
+    b = os.path.basename(n)
+    base_to_nodes.setdefault(b, []).append(n)
+    stem, ext = os.path.splitext(b)
+    if ext in (".cpp", ".c", ".cc", ".cxx"):
+        for hext in (".h", ".hpp"):
+            base_to_nodes.setdefault(stem + hext, []).append(n)
+
+INCLUDE_RE = re.compile(
+    r"^\s*(?:"
+    r"#\s*include\s*[<\"]([^>\"]+)[>\"]"
+    r"|import\s+[\x27\"]([^\x27\"]+)[\x27\"]"
+    r"|from\s+(\S+)\s+import"
+    r"|require\s*\(?[\x27\"]([^\x27\"]+)[\x27\"]"
+    r"|use\s+([\w:]+)"
+    r")"
+)
+
+RELATED_RE = re.compile(r"^-\s*\[.*?\]\((.+?)\.md\)")
+
+def extract_includes(filepath):
+    targets = []
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 300:
+                    break
+                m = INCLUDE_RE.match(line)
+                if m:
+                    dep = next((g for g in m.groups() if g), None)
+                    if dep:
+                        targets.append(dep)
+    except Exception:
+        pass
+    return targets
+
+def extract_related_md(md_path):
+    targets = []
+    in_related = False
+    try:
+        with open(md_path, "r", errors="replace") as f:
+            for line in f:
+                if line.strip().startswith("## Related Files"):
+                    in_related = True
+                    continue
+                if in_related:
+                    if line.startswith("## "):
+                        break
+                    m = RELATED_RE.match(line.strip())
+                    if m:
+                        targets.append(m.group(1))
+    except Exception:
+        pass
+    return targets
+
+def resolve_include(dep, source_node):
+    dep_base = os.path.basename(dep)
+    candidates = base_to_nodes.get(dep_base, [])
+    if not candidates:
+        stem, ext = os.path.splitext(dep_base)
+        if ext in (".h", ".hpp"):
+            for cext in (".cpp", ".c", ".cc"):
+                candidates += base_to_nodes.get(stem + cext, [])
+    candidates = [c for c in candidates if c != source_node]
+    src_dir = os.path.dirname(source_node)
+    preferred = [c for c in candidates if c.startswith(src_dir)]
+    return preferred[0] if preferred else (candidates[0] if candidates else None)
+
+links_seen = set()
+links = []
+
+for node in nodes:
+    src_file = os.path.join(target_dir, node)
+    if os.path.isfile(src_file):
+        deps = extract_includes(src_file)
+    else:
+        deps = extract_related_md(os.path.join(explain_dir, node + ".md"))
+
+    for dep in deps:
+        target_node = resolve_include(dep, node)
+        if target_node and target_node in node_set:
+            key = (node, target_node)
+            if key not in links_seen:
+                links_seen.add(key)
+                links.append({"source": node, "target": target_node})
+
+result = {
+    "nodes": [{"id": n} for n in nodes],
+    "links": links
+}
+print(json.dumps(result))
+'
+
+GRAPH_JSON="$(python3 -c "$GRAPH_SCRIPT" "$TARGET_DIR" "$EXPLAIN_DIR" "${NODES[@]}")"
+
+NODES_JSON="$(echo "$GRAPH_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(",".join(json.dumps(n) for n in d["nodes"]))')"
+LINKS_JSON="$(echo "$GRAPH_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(",".join(json.dumps(l) for l in d["links"]))')"
+EDGE_COUNT="$(echo "$GRAPH_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d["links"]))')"
+
+echo "  Edges : $EDGE_COUNT cross-references detected from source"
+
+REPO_JSON="$(printf '%s' "$REPO_NAME" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')"
+
+# Write the D3 HTML
+cat > "$OUT_FILE" <<HTMLEOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${REPO_NAME} — Explanation Graph</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace; }
+  #header { padding: 16px 24px; border-bottom: 1px solid #21262d; display: flex; align-items: center; gap: 12px; }
+  #header h1 { font-size: 18px; font-weight: 600; color: #f0f6fc; }
+  #header span { font-size: 13px; color: #8b949e; }
+  #controls { padding: 8px 24px; border-bottom: 1px solid #21262d; display: flex; gap: 12px; align-items: center; }
+  #search { background: #161b22; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 12px;
+            border-radius: 6px; font-size: 13px; width: 280px; outline: none; }
+  #search:focus { border-color: #58a6ff; }
+  button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 5px 12px;
+           border-radius: 6px; font-size: 12px; cursor: pointer; }
+  button:hover { background: #30363d; }
+  #svg-wrap { width: 100%; height: calc(100vh - 100px); overflow: hidden; }
+  svg { width: 100%; height: 100%; }
+  .node circle { stroke-width: 1.5px; cursor: pointer; transition: r 0.15s; }
+  .node circle:hover { filter: brightness(1.4); }
+  .node text { font-size: 10px; fill: #8b949e; pointer-events: none; }
+  .node.highlighted circle { stroke: #f0f6fc !important; stroke-width: 2.5px; }
+  .node.highlighted text { fill: #f0f6fc; font-weight: 600; }
+  .node.faded { opacity: 0.2; }
+  .link { stroke: #30363d; stroke-opacity: 0.6; stroke-width: 1.5px; fill: none; marker-end: url(#arrow); }
+  .link.highlighted { stroke: #58a6ff; stroke-opacity: 1; stroke-width: 2px; }
+  #tooltip { position: fixed; background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+             padding: 10px 14px; font-size: 12px; pointer-events: none; display: none;
+             max-width: 320px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 100; }
+  #tooltip .path { color: #58a6ff; font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+  #tooltip .hint { color: #8b949e; font-size: 11px; }
+  .dir-label { font-size: 11px; fill: #484f58; font-weight: 600; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>📂 ${REPO_NAME}</h1>
+  <span id="stats"></span>
+</div>
+<div id="controls">
+  <input id="search" type="text" placeholder="Search files…" autocomplete="off">
+  <button onclick="resetZoom()">Reset View</button>
+  <button onclick="toggleLabels()">Toggle Labels</button>
+</div>
+<div id="svg-wrap"><svg id="graph"></svg></div>
+<div id="tooltip"><div class="path" id="tt-path"></div><div class="hint" id="tt-hint"></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+const REPO = ${REPO_JSON};
+const EXPLAIN_DIR = "docs/explanations";
+const nodes = [${NODES_JSON}];
+const links = [${LINKS_JSON}];
+
+// Derive top-level directory from node id
+function topDir(id) {
+  const slash = id.indexOf('/');
+  return slash >= 0 ? id.substring(0, slash) : '.';
+}
+
+// Assign colors by top-level directory
+const dirs = [...new Set(nodes.map(n => topDir(n.id)))].sort();
+const color = d3.scaleOrdinal(d3.schemeTableau10).domain(dirs);
+
+const svg = d3.select("#graph");
+const width = svg.node().clientWidth || 1200;
+const height = svg.node().clientHeight || 800;
+
+// Arrow marker
+const defs = svg.append("defs");
+defs.append("marker")
+  .attr("id", "arrow").attr("viewBox", "0 -5 10 10")
+  .attr("refX", 18).attr("refY", 0)
+  .attr("markerWidth", 6).attr("markerHeight", 6)
+  .attr("orient", "auto")
+  .append("path").attr("d", "M0,-5L10,0L0,5").attr("fill", "#30363d");
+
+const g = svg.append("g");
+
+// Zoom
+const zoom = d3.zoom().scaleExtent([0.1, 4])
+  .on("zoom", e => g.attr("transform", e.transform));
+svg.call(zoom);
+
+function resetZoom() {
+  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
+}
+
+// Simulation
+const sim = d3.forceSimulation(nodes)
+  .force("link", d3.forceLink(links).id(d => d.id).distance(120).strength(0.5))
+  .force("charge", d3.forceManyBody().strength(-300))
+  .force("center", d3.forceCenter(width / 2, height / 2))
+  .force("collision", d3.forceCollide(22));
+
+const link = g.append("g").selectAll("line")
+  .data(links).join("line").attr("class", "link");
+
+const node = g.append("g").selectAll("g")
+  .data(nodes).join("g")
+  .attr("class", "node")
+  .call(d3.drag()
+    .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+    .on("drag",  (e, d) => { d.fx = e.x; d.fy = e.y; })
+    .on("end",   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+  );
+
+node.append("circle")
+  .attr("r", 10)
+  .attr("fill", d => color(topDir(d.id)))
+  .attr("stroke", d => d3.color(color(topDir(d.id))).darker(0.5));
+
+let labelsVisible = true;
+const labels = node.append("text")
+  .attr("dx", 13).attr("dy", 4)
+  .text(d => d.id.split('/').pop());
+
+function toggleLabels() {
+  labelsVisible = !labelsVisible;
+  labels.style("display", labelsVisible ? null : "none");
+}
+
+// Tooltip
+const tip = document.getElementById("tooltip");
+node
+  .on("mouseover", (e, d) => {
+    document.getElementById("tt-path").textContent = d.id;
+    const deps = links.filter(l => (l.source.id || l.source) === d.id).length;
+    const refs = links.filter(l => (l.target.id || l.target) === d.id).length;
+    document.getElementById("tt-hint").textContent =
+      deps + " dependency/dependencies · referenced by " + refs + " file(s)";
+    tip.style.display = "block";
+  })
+  .on("mousemove", e => {
+    tip.style.left = (e.clientX + 14) + "px";
+    tip.style.top  = (e.clientY - 10) + "px";
+  })
+  .on("mouseout",  () => tip.style.display = "none")
+  .on("click", (e, d) => {
+    // Open the .md file in omd via a custom URL scheme we register below
+    const mdPath = EXPLAIN_DIR + "/" + d.id + ".md";
+    // Highlight connected nodes
+    highlightNode(d);
+  })
+  .on("dblclick", (e, d) => {
+    // Double-click: try to open omd via custom protocol
+    window.location.href = "omd://" + encodeURIComponent(d.id);
+  });
+
+// Highlight on single click
+let highlighted = null;
+function highlightNode(d) {
+  if (highlighted === d.id) {
+    // deselect
+    highlighted = null;
+    node.classed("highlighted", false).classed("faded", false);
+    link.classed("highlighted", false);
+    return;
+  }
+  highlighted = d.id;
+  const connected = new Set([d.id]);
+  links.forEach(l => {
+    const s = l.source.id || l.source, t = l.target.id || l.target;
+    if (s === d.id) connected.add(t);
+    if (t === d.id) connected.add(s);
+  });
+  node.classed("highlighted", n => n.id === d.id)
+      .classed("faded", n => !connected.has(n.id));
+  link.classed("highlighted", l => {
+    const s = l.source.id || l.source, t = l.target.id || l.target;
+    return s === d.id || t === d.id;
+  });
+}
+
+sim.on("tick", () => {
+  link
+    .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+    .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+  node.attr("transform", d => "translate(" + d.x + "," + d.y + ")");
+});
+
+// Stats
+document.getElementById("stats").textContent =
+  nodes.length + " files explained · " + links.length + " cross-references";
+
+// Search
+document.getElementById("search").addEventListener("input", function() {
+  const q = this.value.trim().toLowerCase();
+  if (!q) {
+    node.classed("highlighted", false).classed("faded", false);
+    link.classed("highlighted", false);
+    return;
+  }
+  const matched = new Set(nodes.filter(n => n.id.toLowerCase().includes(q)).map(n => n.id));
+  node.classed("highlighted", n => matched.has(n.id))
+      .classed("faded", n => !matched.has(n.id));
+  // Pan to first match
+  const first = nodes.find(n => matched.has(n.id));
+  if (first) {
+    svg.transition().duration(500).call(
+      zoom.transform,
+      d3.zoomIdentity.translate(width/2 - first.x, height/2 - first.y).scale(1.2)
+    );
+  }
+});
+
+// Legend
+const legend = svg.append("g").attr("transform", "translate(16,16)");
+dirs.forEach((d, i) => {
+  const row = legend.append("g").attr("transform", "translate(0," + (i * 18) + ")");
+  row.append("rect").attr("width", 12).attr("height", 12).attr("rx", 3).attr("fill", color(d));
+  row.append("text").attr("x", 16).attr("y", 10)
+    .attr("fill", "#8b949e").attr("font-size", "11px").text(d);
+});
+</script>
+</body>
+</html>
+HTMLEOF
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "✓ Graph generated: $OUT_FILE"
+echo "  Nodes : ${#NODES[@]} explained files"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+if "$OPEN_BROWSER"; then
+  if [[ "$OSTYPE" == darwin* ]]; then
+    open "$OUT_FILE"
+  else
+    xdg-open "$OUT_FILE" 2>/dev/null || true
+  fi
+fi
