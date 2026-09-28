@@ -91,9 +91,7 @@ return {
     "iamcco/markdown-preview.nvim",
     cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
     ft = { "markdown", "vimwiki", "mermaid", "mmd" },
-    build = function()
-      vim.fn["mkdp#util#install"]()
-    end,
+    build = "cd app && npm install --no-audit --no-fund",
     keys = {
       { "<leader>mv", "<cmd>MarkdownPreviewToggle<cr>", desc = "Mermaid browser preview", ft = { "markdown", "vimwiki", "mermaid", "mmd" } },
       { "<leader>cp", "<cmd>MarkdownPreviewToggle<cr>", desc = "Markdown browser preview", ft = { "markdown", "vimwiki" } },
