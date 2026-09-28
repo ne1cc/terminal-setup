@@ -278,13 +278,14 @@ else
     function om {
         local target="${1:-}"
         [[ -n "$target" ]] || { echo "Usage: om <file.md>"; return 1; }
-        if command -v glow >/dev/null; then
+        if command -v omd >/dev/null 2>&1; then
+            command omd "$target"
+        elif command -v glow >/dev/null; then
             glow -p "$target"
         elif command -v xdg-open >/dev/null; then
             xdg-open "$target" &>/dev/null &
         else
-            echo "No Markdown viewer found. Install glow or xdg-utils."
-            return 1
+            cat "$target"
         fi
     }
     function mt {
@@ -305,6 +306,7 @@ else
     alias of='open'
 fi
 alias omd='om'
+alias markor='om'
 alias onemarkdown='om'
 alias marktext='mt'
 

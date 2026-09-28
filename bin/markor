@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# omd / markor — Open markdown file in Markor (Android/Termux),
+# One Markdown (macOS), or glow / xdg-open (Linux desktop).
+# ==============================================================================
+set -euo pipefail
+
+TARGET="${1:-}"
+if [[ -z "$TARGET" ]]; then
+  echo "Usage: omd <file.md>" >&2
+  exit 1
+fi
+
+# Resolve absolute path
+if [[ -f "$TARGET" ]]; then
+  TARGET="$(realpath "$TARGET")"
+fi
+
+# Detect Android / Termux
+IS_ANDROID=0
+if [[ -d "/data/data/com.termux" ]] || [[ -n "${TERMUX_VERSION:-}" ]] || [[ "$(uname -o 2>/dev/null)" == "Android" ]]; then
+  IS_ANDROID=1
+fi
+
+if [[ "$IS_ANDROID" -eq 1 ]]; then
+  # Ensure file is accessible from Android shared storage if possible
+  SHARED_FILE="$TARGET"
+  if [[ "$TARGET" != /sdcard/* && "$TARGET" != /storage/* && "$TARGET" != /mnt/sdcard/* ]]; then
+    SDCARD_EXCHANGE="/sdcard/Documents/MarkorExchange"
+    mkdir -p "$SDCARD_EXCHANGE" 2>/dev/null || true
+    if [[ -d "$SDCARD_EXCHANGE" && -w "$SDCARD_EXCHANGE" ]]; then
+      BASE="$(basename "$TARGET")"
+      SHARED_FILE="$SDCARD_EXCHANGE/$BASE"
+      cp -f "$TARGET" "$SHARED_FILE" 2>/dev/null || SHARED_FILE="$TARGET"
+    fi
+  fi
+
+  # 1. Try termux-open with text/markdown for Markor
+  if command -v termux-open >/dev/null 2>&1; then
+    termux-open --content-type "text/markdown" "$SHARED_FILE" 2>/dev/null && exit 0
+    termux-open "$SHARED_FILE" 2>/dev/null && exit 0
+  fi
+
+  # 2. Try am broadcast directly via TermuxOpenReceiver
+  if command -v am >/dev/null 2>&1; then
+    am broadcast --user 0 \
+      -a android.intent.action.VIEW \
+      -n "com.termux/com.termux.app.TermuxOpenReceiver" \
+      --es content-type "text/markdown" \
+      -d "$SHARED_FILE" >/dev/null 2>&1 && exit 0
+  fi
+fi
+
+# macOS: One Markdown
+if [[ "$OSTYPE" == darwin* ]]; then
+  if [[ -d "/Applications/One Markdown.app" || -d "$HOME/Applications/One Markdown.app" ]]; then
+    open -a "One Markdown" "$TARGET"
+  else
+    open "$TARGET"
+  fi
+# Standard Linux desktop fallback
+else
+  if command -v glow >/dev/null 2>&1; then
+    glow -p "$TARGET"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$TARGET" &>/dev/null &
+  else
+    cat "$TARGET"
+  fi
+fi
